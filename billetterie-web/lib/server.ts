@@ -107,6 +107,7 @@ export async function publicEvents(id?:string){
  return events;
 }
 export async function maintenance(){
+ await stmt('DELETE FROM scanner_sessions WHERE sync_until<=?',now()).run();
  const expired=await rows("SELECT id,email,token,event_id,checkout_id FROM orders WHERE status='pending' AND expires_at<=?",now());
  for(const o of expired)await database().batch([stmt("UPDATE orders SET status='expired' WHERE id=? AND status='pending' AND expires_at<=?",o.id,now()),job('email',{to:o.email,subject:'Votre réservation a expiré',text:'Les places non payées ont été libérées. Vous pouvez consulter la billetterie pour réserver à nouveau.'},'expired-'+o.id),...(o.checkout_id?[job('expire_checkout',{checkoutId:o.checkout_id,eventId:o.event_id},'expire-checkout-'+o.id)]:[])]);
  await stmt("UPDATE waitlist SET status='expired' WHERE status='offered' AND order_id IN (SELECT id FROM orders WHERE status IN ('expired','cancelled'))").run();
@@ -223,13 +224,82 @@ export async function scanner(request:Request,token:string){
  const link=await one('SELECT s.*,e.name,e.timezone,e.starts_at FROM scanner_links s JOIN events e ON e.id=s.event_id WHERE token=?',token);
  requireValue(link&&link.valid_from<=now()&&link.valid_until>now(),403,'Ce lien de contrôle est invalide ou hors de sa période de validité.');return link;
 }
-export async function scan(token:string,code:string,deviceId:string,at?:number){
- const link=await scanner(new Request(origin()),token),parsed=await verifyTicket(code);requireValue(parsed.e===link.event_id,409,'Ce billet concerne un autre événement.');
+const sqlNow="(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
+type ScannerScope={id:string;event_id:string;timezone:string;valid_from:number;valid_until:number};
+type ScannerSession={id:string;link_id:string;device_id:string;token_hash:string;prepared_at:number;valid_from:number;valid_until:number;sync_until:number;ticket_ids:string};
+type ScanGuard={sql:string;parameters:(string|number)[];check:()=>Promise<void>};
+
+export async function scannerManifest(link:ScannerScope & {name:string}){
+ const tickets=await rows('SELECT b.*,o.name,o.email,t.name type_name FROM tickets b JOIN orders o ON o.id=b.order_id JOIN ticket_types t ON t.id=b.type_id WHERE o.event_id=? LIMIT 20001',link.event_id);
+ requireValue(tickets.length<=20000,413,'Cet événement dépasse la limite de préparation de 20 000 billets par téléphone.');
+ const pub=JSON.parse((await one("SELECT value FROM settings WHERE key='sign_public'")).value);
+ return {event:{id:link.event_id,name:link.name,timezone:link.timezone},tickets,publicKey:pub,validFrom:link.valid_from,validUntil:link.valid_until,fetchedAt:now()};
+}
+export async function prepareScanner(request:Request,token:string,deviceId:string,syncToken?:string){
+ const link=await scanner(request,token),manifest=await scannerManifest(link),preparedAt=manifest.fetchedAt;
+ requireValue(preparedAt>=link.valid_from&&preparedAt<link.valid_until,403,'La période de contrôle est terminée.');
+ const ticketIds=manifest.tickets.map(ticket=>String(ticket.id));
+ let session:ScannerSession|null=syncToken?await one('SELECT * FROM scanner_sessions WHERE token_hash=? AND link_id=? AND device_id=?',await hash(syncToken),link.id,deviceId):null;
+ if(session){
+ if(session.valid_from!==link.valid_from||session.valid_until!==link.valid_until||session.sync_until<=now())session=null;
+ else {
+ const allowed=JSON.parse(session.ticket_ids) as Record<string,number>;
+ if(ticketIds.some(id=>!Object.hasOwn(allowed,id))){
+ // Merge against the current SQL row, adding new IDs without changing old times.
+ const additions=JSON.stringify(Object.fromEntries(ticketIds.map(id=>[id,preparedAt])));
+ const result=await stmt(`UPDATE scanner_sessions SET ticket_ids=json_patch(ticket_ids,
+ (SELECT json_group_object(additions.key,additions.value) FROM json_each(?) additions
+ WHERE NOT EXISTS(SELECT 1 FROM json_each(scanner_sessions.ticket_ids) existing WHERE existing.key=additions.key)))
+ WHERE id=? AND EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=scanner_sessions.link_id AND s.token=? AND s.valid_from=scanner_sessions.valid_from AND s.valid_until=scanner_sessions.valid_until AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,additions,session.id,token).run();
+ requireValue(result.meta.changes,403,'Cette préparation a expiré ou a été révoquée.');
+ }
+ }
+ }
+ if(!session){
+ syncToken=randomToken();
+ session={id:uid(),link_id:link.id,device_id:deviceId,token_hash:await hash(syncToken),prepared_at:preparedAt,valid_from:link.valid_from,valid_until:link.valid_until,sync_until:link.valid_until+86400000,ticket_ids:JSON.stringify(Object.fromEntries(ticketIds.map(id=>[id,preparedAt])))};
+ const result=await stmt(`INSERT INTO scanner_sessions(id,link_id,device_id,token_hash,prepared_at,valid_from,valid_until,sync_until,ticket_ids)
+ SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM scanner_links WHERE id=? AND token=? AND valid_from=? AND valid_until=? AND valid_from<=${sqlNow} AND valid_until>${sqlNow})
+ AND (SELECT count(*) FROM scanner_sessions WHERE link_id=? AND sync_until>${sqlNow})<64`,session.id,session.link_id,session.device_id,session.token_hash,session.prepared_at,session.valid_from,session.valid_until,session.sync_until,session.ticket_ids,link.id,token,link.valid_from,link.valid_until,link.id).run();
+ if(!result.meta.changes){await scanner(request,token);throw new HttpError(429,'La limite de 64 préparations actives est atteinte pour ce lien. Réutilisez la préparation de ce téléphone.');}
+ }
+ // Refreshing statuses preserves the first download time of every existing ticket.
+ await scanner(request,token);
+ return {...manifest,syncToken,deviceId,preparedAt:session.prepared_at,syncUntil:session.sync_until};
+}
+async function syncSession(token:string,deviceId:string,syncToken:string){
+ const session:ScannerSession & {event_id:string;timezone:string;link_from:number;link_until:number}=await one('SELECT ss.*,s.event_id,s.valid_from link_from,s.valid_until link_until,e.timezone FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id JOIN events e ON e.id=s.event_id WHERE ss.token_hash=? AND ss.device_id=? AND s.token=?',await hash(syncToken),deviceId,token);
+ requireValue(session&&session.sync_until>now()&&session.link_from===session.valid_from&&session.link_until===session.valid_until,403,'Cette autorisation de synchronisation est invalide, révoquée ou expirée.');
+ return session;
+}
+async function consumeTicket(link:ScannerScope,code:string,deviceId:string,scannedAt:number,guard:ScanGuard,allowedIds?:Map<string,number>){
+ const parsed=await verifyTicket(code);requireValue(parsed.e===link.event_id,409,'Ce billet concerne un autre événement.');
+ requireValue(!allowedIds||allowedIds.has(parsed.t),409,'Ce billet ne figurait pas dans la préparation de ce téléphone.');
+ if(allowedIds)requireValue(scannedAt>=allowedIds.get(parsed.t)!,409,'L’heure déclarée du scan précède le téléchargement de ce billet.');
  const ticket=await one('SELECT b.*,t.name type_name FROM tickets b JOIN ticket_types t ON t.id=b.type_id WHERE b.id=? AND b.code=?',parsed.t,code);requireValue(ticket,409,'Ce billet est inconnu.');requireValue(ticket.status==='valid',409,'Ce billet est annulé.');
- const scannedAt=at&&Number.isFinite(at)?Math.max(link.valid_from,Math.min(now(),at)):now();
- const result=await stmt("UPDATE tickets SET scanned_at=?,device_id=? WHERE id=? AND status='valid' AND scanned_at IS NULL",scannedAt,deviceId,ticket.id).run();
- if(!result.meta.changes){const existing=await one('SELECT status,scanned_at,device_id FROM tickets WHERE id=?',ticket.id);requireValue(existing,409,'Ce billet est inconnu.');requireValue(existing.status==='valid',409,'Ce billet est annulé.');requireValue(existing.scanned_at!==null,409,'Le statut du billet a changé. Réessayez le contrôle.');return {ok:false,reason:'Déjà scanné à '+new Date(existing.scanned_at).toLocaleTimeString('fr-FR',{timeZone:link.timezone,hour:'2-digit',minute:'2-digit'}),scannedAt:existing.scanned_at,id:ticket.id,sameDevice:existing.device_id===deviceId};}
+ const result=await stmt("UPDATE tickets SET scanned_at=?,device_id=? WHERE id=? AND status='valid' AND scanned_at IS NULL AND "+guard.sql,scannedAt,deviceId,ticket.id,...guard.parameters).run();
+ if(!result.meta.changes){await guard.check();const existing=await one('SELECT status,scanned_at,device_id FROM tickets WHERE id=?',ticket.id);requireValue(existing,409,'Ce billet est inconnu.');requireValue(existing.status==='valid',409,'Ce billet est annulé.');requireValue(existing.scanned_at!==null,409,'Le statut du billet a changé. Réessayez le contrôle.');return {ok:false,reason:'Déjà scanné à '+new Date(existing.scanned_at).toLocaleTimeString('fr-FR',{timeZone:link.timezone,hour:'2-digit',minute:'2-digit'}),scannedAt:existing.scanned_at,id:ticket.id,sameDevice:existing.device_id===deviceId};}
  return {ok:true,type:ticket.type_name,id:ticket.id,scannedAt};
+}
+export async function scan(token:string,code:string,deviceId:string){
+ const request=new Request(origin()),link=await scanner(request,token);
+ return consumeTicket(link,code,deviceId,now(),{
+ sql:`EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=? AND s.token=? AND s.event_id=? AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,
+ parameters:[link.id,token,link.event_id],check:async()=>{await scanner(request,token);}
+ });
+}
+export async function syncScanner(token:string,deviceId:string,syncToken:string,scans:{code:string;at:number}[]){
+ const session=await syncSession(token,deviceId,syncToken),allowed=new Map<string,number>(Object.entries(JSON.parse(session.ticket_ids) as Record<string,number>)),results=[];
+ const scope:ScannerScope={id:session.link_id,event_id:session.event_id,timezone:session.timezone,valid_from:session.valid_from,valid_until:session.valid_until};
+ const guard:ScanGuard={
+ sql:`EXISTS(SELECT 1 FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id WHERE ss.id=? AND ss.token_hash=? AND ss.device_id=? AND s.token=? AND s.event_id=? AND ss.sync_until>${sqlNow} AND s.valid_from=ss.valid_from AND s.valid_until=ss.valid_until)`,
+ parameters:[session.id,session.token_hash,deviceId,token,session.event_id],check:async()=>{await syncSession(token,deviceId,syncToken);}
+ };
+ for(const item of scans){try{
+ requireValue(Number.isSafeInteger(item.at)&&item.at>=session.prepared_at&&item.at>=session.valid_from&&item.at<session.valid_until&&item.at<=now(),409,'L’heure déclarée du scan est hors de la période autorisée.');
+ results.push(await consumeTicket(scope,item.code,deviceId,item.at,guard,allowed));
+ }catch(error){if(!(error instanceof HttpError))throw error;if(error.status===403)throw error;results.push({ok:false,code:item.code,reason:error.message});}}
+ return {results};
 }
 export async function pdfTickets(order:any){
  const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),bold=await pdf.embedFont(StandardFonts.HelveticaBold);

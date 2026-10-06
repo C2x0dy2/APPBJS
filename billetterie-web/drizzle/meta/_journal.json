@@ -22,6 +22,13 @@
       "when": 1791291426522,
       "tag": "0002_waitlist_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791293699655,
+      "tag": "0003_scanner_sessions",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,17 @@
 import { z } from 'zod';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { access,identity,initialize,maintenance,processJobs,publicEvents,reserve,getOrder,checkout,webhook,scanner,scan,cancelTicket,calendar,pdfTickets,database,stmt,rows,one,response,requireValue,HttpError,emailSchema,now,uid,randomToken,demo,runtime,auth,audit,job,origin } from '@/lib/server';
+import { access,identity,initialize,maintenance,processJobs,publicEvents,reserve,getOrder,checkout,webhook,scanner,scannerManifest,prepareScanner,syncScanner,scan,cancelTicket,calendar,pdfTickets,database,stmt,rows,one,response,requireValue,HttpError,emailSchema,now,uid,randomToken,demo,runtime,auth,audit,job,origin } from '@/lib/server';
 export const dynamic='force-dynamic';
+
+async function scannerBody(request:Request):Promise<unknown>{
+ const reader=request.body?.getReader();requireValue(reader,400,'Corps JSON manquant.');
+ const chunks:Uint8Array[]=[],limit=262144;let size=0;
+ try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;
+ if(size>=limit){await reader.cancel();throw new HttpError(413,'Requête trop volumineuse.');}chunks.push(value);
+ }}finally{reader.releaseLock();}
+ const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+ try{return JSON.parse(new TextDecoder().decode(bytes));}catch{throw new HttpError(400,'Corps JSON invalide.');}
+}
 
 async function eventAccess(request:Request,id:string){
  const event=await one('SELECT * FROM events WHERE id=?',id);requireValue(event,404,'Événement introuvable.');
@@ -155,19 +165,20 @@ async function handle(request:Request,context:any){
  return response({token,url:'/controle/'+token,demo:demo(),validFrom:demo()?now():start,validUntil:demo()?now()+7*86400000:end});
  }
  if(section==='scanner'){
- const link=await scanner(request,id);
- if(!post){
- const tickets=await rows('SELECT b.*,o.name,o.email,t.name type_name FROM tickets b JOIN orders o ON o.id=b.order_id JOIN ticket_types t ON t.id=b.type_id WHERE o.event_id=?',link.event_id);
- const pub=JSON.parse((await one("SELECT value FROM settings WHERE key='sign_public'")).value);
- return response({event:{id:link.event_id,name:link.name,timezone:link.timezone},tickets,publicKey:pub,validUntil:link.valid_until,fetchedAt:now()});
+ if(!post)return response(await scannerManifest(await scanner(request,id)));
+ // Limit the bytes actually received, including requests without Content-Length.
+ const data=await scannerBody(request);
+ const deviceId=z.string().min(1).max(100),syncToken=z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+ if(action==='prepare'){
+ const input=z.object({deviceId,syncToken:syncToken.optional()}).parse(data);
+ return response(await prepareScanner(request,id,input.deviceId,input.syncToken));
  }
- const data:any=await request.json();
  if(action==='sync'){
- const input=z.object({deviceId:z.string().min(1).max(100),scans:z.array(z.object({code:z.string().max(1000),at:z.number()})).max(600)}).parse(data),results=[];
- for(const item of input.scans){try{results.push(await scan(id,item.code,input.deviceId,item.at));}catch(e){results.push({ok:false,code:item.code,reason:e instanceof Error?e.message:'Scan refusé'});}}
- return response({results});
+ const input=z.object({deviceId,syncToken,scans:z.array(z.object({code:z.string().min(1).max(1000),at:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)})).max(600)}).parse(data);
+ return response(await syncScanner(id,input.deviceId,input.syncToken,input.scans));
  }
- const input=z.object({code:z.string().max(1000),deviceId:z.string().min(1).max(100)}).parse(data);return response(await scan(id,input.code,input.deviceId));
+ requireValue(!action,404,'Action de contrôle inconnue.');
+ const input=z.object({code:z.string().min(1).max(1000),deviceId}).parse(data);return response(await scan(id,input.code,input.deviceId));
  }
  if(section==='refunds'&&post){
  const data=z.object({ticketId:z.string()}).parse(await request.json()),t=await one('SELECT o.event_id FROM tickets b JOIN orders o ON o.id=b.order_id WHERE b.id=?',data.ticketId);
