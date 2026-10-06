@@ -204,7 +204,19 @@ export async function cancelTicket(ticketId:string,token:string|undefined,actor:
  const ticket=await one('SELECT b.*,o.token,o.event_id,o.payment_id,o.demo,o.email,o.id order_id,i.unit_price,e.cancel_until,e.collective_id FROM tickets b JOIN orders o ON o.id=b.order_id JOIN events e ON e.id=o.event_id JOIN order_items i ON i.order_id=o.id AND i.type_id=b.type_id WHERE b.id=?',ticketId);requireValue(ticket,404,'Billet introuvable.');
  if(token){requireValue(ticket.token===token,403,'Lien invalide.');requireValue(now()<ticket.cancel_until,409,'Le délai d’annulation est dépassé.');requireValue(!ticket.scanned_at,409,'Un billet déjà utilisé ne peut plus être annulé.');}else requireValue(actor,403,'Accès refusé.');
  const amount=ticket.unit_price;
- const out=await database().batch([stmt("UPDATE tickets SET status='cancelled',refund_amount=? WHERE id=? AND status='valid'",amount,ticketId),job('refund',{paymentId:ticket.payment_id,amount,eventId:ticket.event_id,orderId:ticket.order_id,ticketId,demo:ticket.demo},'refund-'+ticketId,true)]);
+ // Buyer cancellation and scanning compete on the same conditional write.
+ // Read the deadline against SQL time at the write, rather than an earlier JS time.
+ const buyerGuard=token?" AND scanned_at IS NULL AND EXISTS(SELECT 1 FROM orders o JOIN events e ON e.id=o.event_id WHERE o.id=tickets.order_id AND o.token=? AND e.cancel_until>(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER)))":"";
+ const out=await database().batch([stmt("UPDATE tickets SET status='cancelled',refund_amount=? WHERE id=? AND status='valid'"+buyerGuard,amount,ticketId,...(token?[token]:[])),job('refund',{paymentId:ticket.payment_id,amount,eventId:ticket.event_id,orderId:ticket.order_id,ticketId,demo:ticket.demo},'refund-'+ticketId,true)]);
+ if(!out[0].meta.changes&&token){
+ const current=await one('SELECT b.status,b.scanned_at,e.cancel_until FROM tickets b JOIN orders o ON o.id=b.order_id JOIN events e ON e.id=o.event_id WHERE b.id=?',ticketId);
+ requireValue(current,404,'Billet introuvable.');
+ if(current.status!=='cancelled'){
+ requireValue(current.scanned_at===null,409,'Un billet déjà utilisé ne peut plus être annulé.');
+ requireValue(now()<current.cancel_until,409,'Le délai d’annulation est dépassé.');
+ throw new HttpError(409,'Le statut du billet a changé. Actualisez votre commande.');
+ }
+ }
  if(out[0].meta.changes)await audit(actor?.email||ticket.email,'cancel_ticket',ticketId,ticket.collective_id,{amount});await maintenance();return {ok:true};
 }
 export async function scanner(request:Request,token:string){
@@ -213,10 +225,10 @@ export async function scanner(request:Request,token:string){
 }
 export async function scan(token:string,code:string,deviceId:string,at?:number){
  const link=await scanner(new Request(origin()),token),parsed=await verifyTicket(code);requireValue(parsed.e===link.event_id,409,'Ce billet concerne un autre événement.');
- const ticket=await one('SELECT b.*,t.name type_name FROM tickets b JOIN ticket_types t ON t.id=b.type_id WHERE b.id=? AND b.code=?',parsed.t,code);requireValue(ticket&&ticket.status==='valid',409,'Ce billet est annulé ou inconnu.');
+ const ticket=await one('SELECT b.*,t.name type_name FROM tickets b JOIN ticket_types t ON t.id=b.type_id WHERE b.id=? AND b.code=?',parsed.t,code);requireValue(ticket,409,'Ce billet est inconnu.');requireValue(ticket.status==='valid',409,'Ce billet est annulé.');
  const scannedAt=at&&Number.isFinite(at)?Math.max(link.valid_from,Math.min(now(),at)):now();
  const result=await stmt("UPDATE tickets SET scanned_at=?,device_id=? WHERE id=? AND status='valid' AND scanned_at IS NULL",scannedAt,deviceId,ticket.id).run();
- if(!result.meta.changes){const existing=await one('SELECT scanned_at,device_id FROM tickets WHERE id=?',ticket.id);return {ok:false,reason:'Déjà scanné à '+new Date(existing.scanned_at).toLocaleTimeString('fr-FR',{timeZone:link.timezone,hour:'2-digit',minute:'2-digit'}),scannedAt:existing.scanned_at,id:ticket.id,sameDevice:existing.device_id===deviceId};}
+ if(!result.meta.changes){const existing=await one('SELECT status,scanned_at,device_id FROM tickets WHERE id=?',ticket.id);requireValue(existing,409,'Ce billet est inconnu.');requireValue(existing.status==='valid',409,'Ce billet est annulé.');requireValue(existing.scanned_at!==null,409,'Le statut du billet a changé. Réessayez le contrôle.');return {ok:false,reason:'Déjà scanné à '+new Date(existing.scanned_at).toLocaleTimeString('fr-FR',{timeZone:link.timezone,hour:'2-digit',minute:'2-digit'}),scannedAt:existing.scanned_at,id:ticket.id,sameDevice:existing.device_id===deviceId};}
  return {ok:true,type:ticket.type_name,id:ticket.id,scannedAt};
 }
 export async function pdfTickets(order:any){

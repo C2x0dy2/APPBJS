@@ -78,11 +78,24 @@ Une offre libérée par l’acheteur ou arrivée à expiration cesse d’être a
 
 L’organisateur ne peut pas réduire la capacité d’un type de place sous la quantité demandée par une inscription active, en attente ou déjà proposée. Pour réduire davantage la capacité, il doit d’abord retirer les inscriptions concernées depuis le tableau de bord.
 
+## Annulation acheteur et contrôle des entrées
+
+L’annulation d’un billet par l’acheteur exige le lien personnel de sa commande, une échéance d’annulation encore ouverte et un billet jamais utilisé. Ces conditions sont vérifiées ensemble lors de la modification en base. L’échéance est comparée à l’heure SQL courante en millisecondes, même si la demande a attendu avant son traitement. [Fonctions de date SQLite](https://www.sqlite.org/lang_datefunc.html).
+
+Si un scan et une annulation arrivent simultanément, la première modification acceptée détermine le résultat :
+
+- Si le scan est enregistré en premier, le billet reste valide et marqué utilisé ; l’annulation acheteur est refusée, sans remboursement ni place libérée.
+- Si l’annulation est enregistrée en premier, le QR est refusé côté serveur et une seule place est libérée vers la liste d’attente ou la vente. Le scan indique « billet annulé ».
+
+Répéter une demande d’annulation ne déclenche aucun remboursement supplémentaire. Le contrôle distingue un billet annulé d’un billet déjà utilisé, dont il affiche l’heure du premier scan.
+
+Un organisateur autorisé conserve la possibilité de rembourser un billet après son utilisation ou après l’échéance. Une demande acheteur ne peut pas obtenir ce droit en ajoutant un champ de contournement au formulaire ou à la requête.
+
 ## Limites du contrôle hors ligne
 
 Deux téléphones hors ligne ne peuvent pas connaître les scans de l’autre. Utilisez un seul téléphone hors ligne ou une connexion commune. À la synchronisation, le premier enregistrement accepté par le serveur gagne et les conflits sont signalés.
 
-Les annulations faites après le téléchargement ne sont visibles qu’au retour du réseau. La liste PDF des participants est disponible dans les exports de l’événement.
+Un scan hors ligne encore non synchronisé ne peut pas empêcher une annulation côté serveur. Les annulations faites après le téléchargement restent invisibles au téléphone jusqu’au retour du réseau ; la synchronisation applique alors le statut du serveur. La liste PDF des participants est disponible dans les exports de l’événement.
 
 ## Développement et vérifications
 
@@ -91,13 +104,17 @@ Exécutez ces commandes depuis **billetterie-web**. Node.js 22.13 ou supérieur 
 ```powershell
 npm run check
 npm run test:stock
+npm run test:cancellation-race
 npm run test:api
 npm run test:waitlist
+npm run test:cancellation
 npm run test:load
 npm run build
 ```
 
-Les tests API et de liste d’attente nécessitent le serveur de développement en démonstration. Ils créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle.
+Les commandes `test:stock` et `test:cancellation-race` utilisent des bases SQLite isolées et ne modifient pas la base locale de l’application. Le test de course charge les fonctions serveur réelles et contrôle les deux ordres possibles entre scan et annulation, avec SQLite en mémoire ; aucun serveur de développement n’est nécessaire.
+
+Les commandes `test:api`, `test:waitlist`, `test:cancellation` et `test:load` nécessitent le serveur de développement en démonstration, lancé dans un autre terminal. Elles créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle. `test:cancellation` vérifie les annulations par HTTP et refuse une cible hors de cet ordinateur ou une base hors démonstration.
 
 Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. La troisième ajoute les contrôles atomiques de liste d’attente, notamment lors de l’inscription et d’une réduction de capacité. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
 
