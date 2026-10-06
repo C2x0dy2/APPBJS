@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+const base=process.env.TEST_URL||'http://127.0.0.1:5173';
+async function request(path,data,status=200){const r=await fetch(base+'/api/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});const body=await r.json();assert.equal(r.status,status,JSON.stringify(body));return body;}
+const dashboard=await request('dashboard');
+assert.equal(dashboard.mode,'demo');assert.equal(dashboard.collectives.length>=3,true);
+const name='Validation automatique '+Date.now();
+const start=Date.now()+14*86400000;
+const created=await request('events',{collectiveId:'c1',name,description:'Événement réservé aux essais',location:'Salle de test',timezone:'Europe/Paris',startsAt:start,doorsAt:start-3600000,cancelUntil:start-172800000,status:'on_sale',types:[{name:'Fosse',price:2200,capacity:2,earlyPrice:1800,earlyUntil:Date.now()+86400000},{name:'Balcon',price:3000,capacity:1}]},201);
+const event=(await request('events/'+created.id)).events[0];
+assert.equal(event.types[0].sold,undefined,'Les chiffres internes ne doivent pas être publics.');
+const floor=event.types.find(t=>t.name==='Fosse'),balcony=event.types.find(t=>t.name==='Balcon');
+const reservation=await request('reserve',{eventId:event.id,name:'Test acheteur',email:'buyer@example.invalid',items:[{typeId:floor.id,quantity:2}]},201);
+assert.equal(reservation.total,3600,'Tarif early figé à la réservation.');
+await request('reserve',{eventId:event.id,name:'Concurrent',email:'other@example.invalid',items:[{typeId:floor.id,quantity:1}]},409);
+await request('waitlist',{typeId:floor.id,name:'Attente A',email:'a@example.invalid',quantity:1},201);
+await request('waitlist',{typeId:floor.id,name:'Attente B',email:'b@example.invalid',quantity:1},201);
+await request('orders/'+reservation.token+'/checkout',{});
+let order=await request('orders/'+reservation.token);
+assert.equal(order.tickets.length,2);
+assert.equal(order.status,'paid');
+assert(order.tickets.every(t=>t.code.startsWith('PASS1.')&&t.qr.startsWith('data:image/png')));
+const pdf=await fetch(base+'/api/orders/'+reservation.token+'/pdf');assert.equal(pdf.status,200);assert.equal((await pdf.text()).slice(0,4),'%PDF');
+const ics=await fetch(base+'/api/orders/'+reservation.token+'/calendar');assert((await ics.text()).includes('BEGIN:VCALENDAR'));
+const scanner=await request('scanner-links',{eventId:event.id});
+const cache=await request('scanner/'+scanner.token);assert.equal(cache.tickets.length,2);assert(cache.publicKey.kty==='EC');
+const scans=await Promise.all(Array.from({length:10},(_,n)=>request('scanner/'+scanner.token,{code:order.tickets[0].code,deviceId:'test-'+n})));
+assert.equal(scans.filter(s=>s.ok).length,1,'Un seul scan doit entrer.');
+const invalid=order.tickets[1].code.slice(0,-10)+'XXXXXXXXXX';
+await request('scanner/'+scanner.token,{code:invalid,deviceId:'test'},400);
+await request('orders/'+reservation.token+'/cancel-ticket',{ticketId:order.tickets[1].id});
+await request('scanner/'+scanner.token,{code:order.tickets[1].code,deviceId:'test'},409);
+for(let n=0;n<10;n++){await request('maintenance',{});order=await request('orders/'+reservation.token);if(order.refunded===1800)break;}
+assert.equal(order.refunded,1800);
+const after=await request('dashboard?collective=c1');
+const wa=after.waiting.find(w=>w.email==='a@example.invalid'&&w.event_id===event.id),wb=after.waiting.find(w=>w.email==='b@example.invalid'&&w.event_id===event.id);
+assert.equal(wa.status,'offered');assert.equal(wb.status,'waiting','Respect de l’ordre de la liste.');
+const orderA=after.orders.find(o=>o.id===wa.order_id);await request('orders/'+orderA.token+'/cancel',{});
+const next=await request('dashboard?collective=c1');assert.equal(next.waiting.find(w=>w.id===wb.id).status,'offered');
+const csv=await fetch(base+'/api/export/'+event.id+'?kind=participants');assert.equal(csv.status,200);assert((await csv.text()).includes('Test acheteur'));
+await request('webhook',{},503);
+await request('reserve',{eventId:event.id,name:'X',email:'not-an-email',items:[{typeId:floor.id,quantity:1}]},400);
+const forged=await fetch(base+'/api/scanner/'+scanner.token,{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://evil.invalid'},body:JSON.stringify({code:order.tickets[0].code,deviceId:'x'})});assert.equal(forged.status,403);
+await request('events/'+event.id+'/cancel',{});
+for(let n=0;n<10;n++){await request('maintenance',{});order=await request('orders/'+reservation.token);if(order.status==='refunded')break;}
+assert.equal(order.status,'refunded');
+console.log('API : réservation, stock, early, PDF, agenda, signature QR, 10 scans concurrents, remboursement, attente FIFO, exports et origine vérifiés.');
