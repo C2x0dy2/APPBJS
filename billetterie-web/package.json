@@ -6,6 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "setup:local": "node scripts/setup-local.mjs",
     "check": "tsc --noEmit",
     "test:stock": "python tests/test_inventory.py",
     "test:api": "node tests/integration.mjs",

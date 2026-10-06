@@ -2,11 +2,24 @@
 
 Application en français construite à partir du « Cahier des charges — Outil de billetterie.docx ».
 
-## Essayer sur cet ordinateur
+## Démarrer après avoir cloné le dépôt
 
-Double-cliquez sur **Demarrer la billetterie.cmd**, dans le dossier parent, puis ouvrez **http://127.0.0.1:5173**. Gardez la fenêtre du lanceur ouverte.
+Cette application web contient l’interface React et son API serveur. Le projet Expo présent à la racine du dépôt reste une application distincte. Les commandes ci-dessous concernent le dossier **billetterie-web**.
 
-La base locale est déjà initialisée. Les données restent dans ce dossier, indépendamment des données de la version en ligne.
+Installez **Node.js 22.13 ou supérieur**, puis ouvrez un terminal à la racine du dépôt `APPBJS` :
+
+```powershell
+cd billetterie-web
+npm ci
+npm run setup:local
+npm run dev
+```
+
+Ouvrez **http://127.0.0.1:5173** et gardez le terminal ouvert. Pour arrêter le serveur, utilisez `Ctrl+C`.
+
+`setup:local` crée `.env` à partir de `.env.example` si ce fichier n’existe pas, compile l’application et applique les migrations manquantes à la base locale. Vous pouvez relancer cette commande sans réinitialiser les données ni remplacer votre `.env`.
+
+La configuration `.openai/hosting.json` fournie déclare le stockage local `DB` ; elle ne contient aucun identifiant de Site personnel. Les données locales restent dans `.wrangler/state`, indépendamment de celles d’une version en ligne. Les fichiers `.env` et la base locale ne sont pas envoyés dans Git.
 
 La première ouverture crée trois collectifs et cinq événements d’exemple pour le printemps 2027. Le bandeau « Démonstration » reste visible. Les encaissements sont fictifs et aucun message n’est envoyé. Vous pouvez créer un événement, ouvrir sa page de vente, réserver, simuler le paiement, télécharger les billets, créer un lien scanneur et essayer les entrées.
 
@@ -63,31 +76,27 @@ Les annulations faites après le téléchargement ne sont visibles qu’au retou
 
 ## Développement et vérifications
 
-Node.js 22.13 ou supérieur ; Python 3.14 utilisé uniquement pour les tests SQLite.
+Exécutez ces commandes depuis **billetterie-web**. Node.js 22.13 ou supérieur est nécessaire ; Python est utilisé uniquement pour les tests SQLite.
 
 ```powershell
-npm ci
-npm run db:generate
-npm run build
-npm run dev
 npm run check
 npm run test:stock
 npm run test:api
 npm run test:load
+npm run build
 ```
 
 Les tests API nécessitent le serveur de développement en démonstration. Ils créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle.
 
 Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
 
-Pour initialiser une nouvelle base locale après compilation, appliquer les migrations une seule fois, dans l’ordre, avec :
+Pour initialiser la base d’un nouveau clone ou appliquer les migrations ajoutées par l’équipe, arrêtez le serveur et exécutez :
 
 ```powershell
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_nice_sebastian_shaw.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_stock_invariants.sql
+npm run setup:local
 ```
 
-Un Node.js 22 est installé dans ../.tools pour cet ordinateur, sans changer l’installation système.
+Les migrations déjà appliquées ne sont pas rejouées. `npm run db:generate` sert à produire une nouvelle migration après une modification du modèle ; il n’est pas nécessaire pour démarrer l’application.
 
 ## Architecture
 
