@@ -68,6 +68,16 @@ Les frais du prestataire ne sont pas synchronisés dans cette version : le net a
 - Le virement est une option du document ; il n’est pas activé ni implémenté dans cette première version carte seule.
 - Le lien scanneur est valable le jour local de l’événement. En démonstration uniquement, il fonctionne immédiatement pendant sept jours.
 
+## Liste d’attente
+
+Le nombre de places demandé est limité à la plus petite valeur entre la capacité totale du type de place et le maximum par commande de l’événement. Si les places demandées sont disponibles et qu’aucune demande antérieure n’attend, l’inscription est refusée : l’acheteur doit réserver directement.
+
+Plusieurs soumissions simultanées pour la même adresse e-mail et le même type de place créent une seule inscription active et une seule confirmation dans la file d’envoi. L’ordre strict reste appliqué : si le premier inscrit demande deux places et qu’une seule est libre, il attend la deuxième ; les demandes suivantes ne le dépassent pas.
+
+Une offre libérée par l’acheteur ou arrivée à expiration cesse d’être active ; les places sont alors proposées à la demande suivante.
+
+L’organisateur ne peut pas réduire la capacité d’un type de place sous la quantité demandée par une inscription active, en attente ou déjà proposée. Pour réduire davantage la capacité, il doit d’abord retirer les inscriptions concernées depuis le tableau de bord.
+
 ## Limites du contrôle hors ligne
 
 Deux téléphones hors ligne ne peuvent pas connaître les scans de l’autre. Utilisez un seul téléphone hors ligne ou une connexion commune. À la synchronisation, le premier enregistrement accepté par le serveur gagne et les conflits sont signalés.
@@ -82,13 +92,14 @@ Exécutez ces commandes depuis **billetterie-web**. Node.js 22.13 ou supérieur 
 npm run check
 npm run test:stock
 npm run test:api
+npm run test:waitlist
 npm run test:load
 npm run build
 ```
 
-Les tests API nécessitent le serveur de développement en démonstration. Ils créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle.
+Les tests API et de liste d’attente nécessitent le serveur de développement en démonstration. Ils créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle.
 
-Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
+Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. La troisième ajoute les contrôles atomiques de liste d’attente, notamment lors de l’inscription et d’une réduction de capacité. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
 
 Pour initialiser la base d’un nouveau clone ou appliquer les migrations ajoutées par l’équipe, arrêtez le serveur et exécutez :
 

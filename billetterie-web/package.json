@@ -10,6 +10,7 @@
     "check": "tsc --noEmit",
     "test:stock": "python tests/test_inventory.py",
     "test:api": "node tests/integration.mjs",
+    "test:waitlist": "node tests/waitlist.mjs",
     "test:load": "node tests/load-api.mjs",
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",

@@ -15,6 +15,13 @@
       "when": 1791274280459,
       "tag": "0001_stock_invariants",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791291426522,
+      "tag": "0002_waitlist_guards",
+      "breakpoints": true
     }
   ]
 }

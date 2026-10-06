@@ -59,7 +59,8 @@ async function saveEvent(request:Request,data:any,id?:string){
  if(existing&&(existing.starts_at!==input.startsAt||existing.location!==input.location||existing.doors_at!==input.doorsAt)){
  for(const o of await rows("SELECT id,email,token FROM orders WHERE event_id=? AND status='paid'",eventId))commands.push(job('email',{to:o.email,subject:'Informations modifiées : '+input.name,text:'La date, le lieu ou l’ouverture des portes a changé. Consultez vos billets actualisés : '+origin(request)+'/commande/'+o.token},'modified-'+eventId+'-'+now()+'-'+o.id));
  }
- await database().batch(commands);await audit(user.email,id?'edit_event':'create_event',eventId,collectiveId);await maintenance();return {id:eventId};
+ try{await database().batch(commands);}catch(error){if(String(error).includes('WAITLIST_CAPACITY'))throw new HttpError(409,'Le stock ne peut pas être inférieur à une demande en liste d’attente. Retirez cette demande avant de réduire la capacité.');throw error;}
+ await audit(user.email,id?'edit_event':'create_event',eventId,collectiveId);await maintenance();return {id:eventId};
 }
 async function cancelEvent(request:Request,id:string){
  const {event,user}=await eventAccess(request,id);
@@ -125,11 +126,26 @@ async function handle(request:Request,context:any){
  }
  if(section==='waitlist'&&post){
  const data=z.object({typeId:z.string(),email:emailSchema,name:z.string().trim().min(1).max(120),quantity:z.number().int().min(1).max(20)}).parse(await request.json());
+ await maintenance();
  const type=await one('SELECT t.*,e.max_quantity,e.doors_at,e.status FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE t.id=?',data.typeId);
  requireValue(type&&type.status==='on_sale'&&type.doors_at>now(),409,'La liste d’attente est fermée.');
  requireValue(data.quantity<=type.max_quantity,400,'Quantité trop élevée.');
+ requireValue(data.quantity<=type.capacity,400,'La quantité demandée dépasse la capacité de ce type de place.');
  const prior=await one("SELECT id FROM waitlist WHERE type_id=? AND email=? AND status IN ('waiting','offered')",data.typeId,data.email);if(prior)return response({ok:true});
- const wid=uid();await database().batch([stmt('INSERT INTO waitlist(id,type_id,email,name,quantity,created_at) VALUES(?,?,?,?,?,?)',wid,data.typeId,data.email,data.name,data.quantity,now()),job('email',{to:data.email,subject:'Inscription en liste d’attente',text:'Votre demande de '+data.quantity+' places a été enregistrée. Vous recevrez un lien personnel dès que ces places seront disponibles.'},'waiting-'+wid)]);
+ const queued=await one("SELECT id FROM waitlist WHERE type_id=? AND status='waiting' LIMIT 1",data.typeId);
+ requireValue(type.capacity-type.held-type.sold<data.quantity||queued,409,'Ces places sont disponibles. Réservez-les directement.');
+ const wid=uid(),at=now();
+ // Recheck stock, capacity and opening in the insertion itself; a concurrent
+ // reservation or organizer edit must not turn this into an impossible request.
+ const result=await database().batch([
+ stmt("INSERT OR IGNORE INTO waitlist(id,type_id,email,name,quantity,created_at) SELECT ?,t.id,?,?,?,? FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE t.id=? AND e.status='on_sale' AND e.doors_at>? AND ?>0 AND ?<=min(t.capacity,e.max_quantity) AND (t.capacity-t.held-t.sold<? OR EXISTS(SELECT 1 FROM waitlist w WHERE w.type_id=t.id AND w.status='waiting'))",wid,data.email,data.name,data.quantity,at,data.typeId,at,data.quantity,data.quantity,data.quantity),
+ job('email',{to:data.email,subject:'Inscription en liste d’attente',text:'Votre demande de '+data.quantity+' places a été enregistrée. Vous recevrez un lien personnel dès que ces places seront disponibles.'},'waiting-'+wid,true)
+ ]);
+ if(!result[0].meta.changes){
+ const duplicate=await one("SELECT id FROM waitlist WHERE type_id=? AND email=? AND status IN ('waiting','offered')",data.typeId,data.email);
+ if(duplicate)return response({ok:true});
+ throw new HttpError(409,'La disponibilité a changé. Actualisez l’événement avant de réessayer.');
+ }
  await maintenance();return response({ok:true},201);
  }
  if(section==='scanner-links'&&post){

@@ -103,13 +103,13 @@ export async function verifyTicket(code:string){
 }
 export async function publicEvents(id?:string){
  const events=await rows("SELECT e.*,c.name collective_name,c.color FROM events e JOIN collectives c ON c.id=e.collective_id WHERE e.status<>'draft'"+(id?' AND e.id=?':'')+' ORDER BY e.starts_at',...(id?[id]:[]));
- for(const e of events)e.types=await rows("SELECT t.id,t.event_id,t.name,t.price,t.early_price,t.early_until,CASE WHEN EXISTS(SELECT 1 FROM waitlist w WHERE w.type_id=t.id AND w.status='waiting') THEN 0 ELSE t.capacity-t.held-t.sold END available FROM ticket_types t WHERE event_id=?",e.id);
+ for(const e of events)e.types=await rows("SELECT t.id,t.event_id,t.name,t.price,t.early_price,t.early_until,min(t.capacity,?) waitlist_limit,CASE WHEN EXISTS(SELECT 1 FROM waitlist w WHERE w.type_id=t.id AND w.status='waiting') THEN 0 ELSE t.capacity-t.held-t.sold END available FROM ticket_types t WHERE event_id=?",e.max_quantity,e.id);
  return events;
 }
 export async function maintenance(){
  const expired=await rows("SELECT id,email,token,event_id,checkout_id FROM orders WHERE status='pending' AND expires_at<=?",now());
  for(const o of expired)await database().batch([stmt("UPDATE orders SET status='expired' WHERE id=? AND status='pending' AND expires_at<=?",o.id,now()),job('email',{to:o.email,subject:'Votre réservation a expiré',text:'Les places non payées ont été libérées. Vous pouvez consulter la billetterie pour réserver à nouveau.'},'expired-'+o.id),...(o.checkout_id?[job('expire_checkout',{checkoutId:o.checkout_id,eventId:o.event_id},'expire-checkout-'+o.id)]:[])]);
- await stmt("UPDATE waitlist SET status='expired' WHERE status='offered' AND order_id IN (SELECT id FROM orders WHERE status='expired')").run();
+ await stmt("UPDATE waitlist SET status='expired' WHERE status='offered' AND order_id IN (SELECT id FROM orders WHERE status IN ('expired','cancelled'))").run();
  const active=await rows("SELECT t.*,e.starts_at,e.doors_at,e.wait_hours,e.urgent_wait_hours FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE e.status='on_sale' AND e.doors_at>?",now());
  for(const t of active)for(let n=0;n<20;n++){
  const head=await one("SELECT * FROM waitlist WHERE type_id=? AND status='waiting' ORDER BY created_at,id LIMIT 1",t.id);if(!head)break;
