@@ -109,6 +109,22 @@ export function mergeScanResult(data: ScannerManifest, ticketId: string, result:
 
 // Persist the server observation with its queue acknowledgement, so an expired
 // manifest still has the correct count if the browser closes immediately.
+export async function clearScannerData(token: string) {
+ try { navigator.serviceWorker?.controller?.postMessage({ type: 'PURGE' }); } catch {}
+ const db = await openDb();
+ return new Promise<void>((resolve, reject) => {
+  const tx = db.transaction(['events', 'scans'], 'readwrite');
+  tx.objectStore('events').delete(token);
+  const store = tx.objectStore('scans');
+  const request = store.getAll();
+  request.onsuccess = () => {
+   for (const scan of request.result || []) if (scan.token === token) store.delete(scan.key);
+  };
+  tx.oncomplete = () => { db.close(); resolve(); };
+  tx.onabort = () => { db.close(); reject(tx.error || new Error('Les données locales n’ont pas pu être effacées.')); };
+ });
+}
+
 export async function finishScan(key: string, result: ScanResult, expected?: PendingScan): Promise<boolean> {
  const db = await openDb();
  return new Promise((resolve, reject) => {

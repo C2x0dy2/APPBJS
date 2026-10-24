@@ -2,7 +2,7 @@
 import { useState,useEffect,useRef } from 'react';
 import { ScanLine,Wifi,WifiOff,Download,Users,Check,X,Camera,RefreshCw,Ticket } from 'lucide-react';
 import { api,date } from '@/lib/client';
-import { cachedEvent,cacheEvent,pendingScans,offlineScan,finishScan,mergeScanResult,offlineAvailability } from '@/lib/offline';
+import { cachedEvent,cacheEvent,pendingScans,offlineScan,finishScan,mergeScanResult,offlineAvailability,clearScannerData } from '@/lib/offline';
 import type { ScannerManifest,PendingScan,ScanResult } from '@/lib/offline';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
@@ -30,11 +30,20 @@ export default function Scanner({token}:{token:string}){
   const current=dataRef.current,time=Date.now();
   // Cached expired lists remain visible for upload; never renew their scan access.
   if(current&&(time>=current.validUntil||(Number.isFinite(current.validFrom)&&time<current.validFrom!)))return;
-  const next:ScannerManifest=await api('scanner/'+token+'/prepare',{
-   deviceId:deviceRef.current,
-   ...(current?.syncToken&&current.deviceId===deviceRef.current?{syncToken:current.syncToken}:{}),
-  });
-  await cacheEvent(token,next);showManifest(next);
+  try{
+   const next:ScannerManifest=await api('scanner/'+token+'/prepare',{
+    deviceId:deviceRef.current,
+    ...(current?.syncToken&&current.deviceId===deviceRef.current?{syncToken:current.syncToken}:{}),
+   });
+   await cacheEvent(token,next);showManifest(next);
+  }catch(error){
+   // A revoked link must not leave attendee data or the page token on the phone.
+   if(error instanceof Error&&'status' in error&&(error as Error&{status:number}).status===403){
+    await clearScannerData(token);
+    if(activeTokenRef.current===token){dataRef.current=null;setData(null);}
+   }
+   throw error;
+  }
  }
  function sync():Promise<SyncOutcome>{
   if(syncTaskRef.current?.token===token)return syncTaskRef.current.promise;

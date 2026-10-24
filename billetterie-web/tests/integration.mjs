@@ -23,12 +23,12 @@ const pdf=await fetch(base+'/api/orders/'+reservation.token+'/pdf');assert.equal
 const ics=await fetch(base+'/api/orders/'+reservation.token+'/calendar');assert((await ics.text()).includes('BEGIN:VCALENDAR'));
 const scanner=await request('scanner-links',{eventId:event.id});
 const cache=await request('scanner/'+scanner.token);assert.equal(cache.tickets.length,2);assert(cache.publicKey.kty==='EC');
-const scans=await Promise.all(Array.from({length:10},(_,n)=>request('scanner/'+scanner.token,{code:order.tickets[0].code,deviceId:'test-'+n})));
+const scans=await Promise.all(Array.from({length:10},()=>request('scanner/'+scanner.token,{code:order.tickets[0].code,deviceId:'test-device'})));
 assert.equal(scans.filter(s=>s.ok).length,1,'Un seul scan doit entrer.');
 const invalid=order.tickets[1].code.slice(0,-10)+'XXXXXXXXXX';
-await request('scanner/'+scanner.token,{code:invalid,deviceId:'test'},400);
+await request('scanner/'+scanner.token,{code:invalid,deviceId:'test-device'},400);
 await request('orders/'+reservation.token+'/cancel-ticket',{ticketId:order.tickets[1].id});
-await request('scanner/'+scanner.token,{code:order.tickets[1].code,deviceId:'test'},409);
+await request('scanner/'+scanner.token,{code:order.tickets[1].code,deviceId:'test-device'},409);
 for(let n=0;n<10;n++){await request('maintenance',{});order=await request('orders/'+reservation.token);if(order.refunded===1800)break;}
 assert.equal(order.refunded,1800);
 const after=await request('dashboard?collective=c1');

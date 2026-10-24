@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { access,identity,initialize,maintenance,processJobs,publicEvents,reserve,getOrder,checkout,webhook,scanner,scannerManifest,prepareScanner,syncScanner,scan,cancelTicket,calendar,pdfTickets,database,stmt,rows,one,response,requireValue,HttpError,emailSchema,now,uid,randomToken,demo,runtime,auth,audit,job,origin } from '@/lib/server';
+import { access,identity,initialize,maintenance,processJobs,publicEvents,reserve,getOrder,checkout,webhook,scanner,scannerManifest,prepareScanner,syncScanner,scan,cancelTicket,calendar,pdfTickets,database,stmt,rows,one,response,requireValue,HttpError,emailSchema,now,uid,randomToken,demo,runtime,auth,audit,job,origin,readJson,rateLimit,maybeMaintenance,maybeProcessJobs,logout,verifyStripeAccount,MAX_BODY,secretMatches } from '@/lib/server';
 export const dynamic='force-dynamic';
 
 async function scannerBody(request:Request):Promise<unknown>{
@@ -20,7 +20,7 @@ async function eventAccess(request:Request,id:string){
 async function dashboard(request:Request,collectiveId:string){
  const initial=await access(request);
  if(!collectiveId){const allowed=initial.admin?await one('SELECT id FROM collectives ORDER BY created_at LIMIT 1'):await one('SELECT collective_id id FROM members WHERE email=? ORDER BY collective_id LIMIT 1',initial.email);if(!allowed&&initial.admin)return {collectiveId:'',events:[],collectives:[],orders:[],waiting:[],trend:[],members:[],activity:[],failures:[],user:initial,mode:demo()?'demo':'live',configured:{payment:!!runtime.STRIPE_SECRET_KEY,email:!!runtime.RESEND_API_KEY}};requireValue(allowed,404,'Aucun collectif accessible.');collectiveId=allowed.id;}
- const user=await access(request,collectiveId);await maintenance();
+ const user=await access(request,collectiveId);await maybeMaintenance();
  const events=await rows('SELECT * FROM events WHERE collective_id=? ORDER BY starts_at',collectiveId);
  for(const e of events){
  e.types=await rows("SELECT t.*,capacity-held-sold available,(SELECT coalesce(sum(w.quantity),0) FROM waitlist w WHERE w.type_id=t.id AND w.status='waiting') waiting FROM ticket_types t WHERE event_id=?",e.id);
@@ -92,7 +92,10 @@ function dayBounds(start:number,tz:string){
  const next=new Date(Date.parse(day+'T12:00:00Z')+86400000).toISOString().slice(0,10);return [localMidnight(day),localMidnight(next)];
 }
 async function exportsFor(request:Request,id:string,kind:string,format:string){
- await eventAccess(request,id);
+ requireValue(['participants','waitlist','orders'].includes(kind)&&['csv','pdf'].includes(format),400,'Export invalide.');
+ const {user}=await eventAccess(request,id);
+ await rateLimit(request,'export',30,60000);
+ await audit(user.email,'export',id,null,{kind,format});
  let records:any[],columns:string[];
  if(kind==='participants'){records=await rows("SELECT o.name Nom,o.email Email,t.name Type,b.id Billet,CASE WHEN b.scanned_at IS NOT NULL THEN 'Entré' ELSE 'À venir' END Entree FROM tickets b JOIN orders o ON o.id=b.order_id JOIN ticket_types t ON t.id=b.type_id WHERE o.event_id=? AND b.status='valid' ORDER BY o.name",id);columns=['Nom','Email','Type','Billet','Entree'];}
  else if(kind==='waitlist'){records=await rows('SELECT w.name Nom,w.email Email,t.name Type,w.quantity Quantite,w.status Statut FROM waitlist w JOIN ticket_types t ON t.id=w.type_id WHERE t.event_id=? ORDER BY w.created_at,w.id',id);columns=['Nom','Email','Type','Quantite','Statut'];}
@@ -103,40 +106,42 @@ async function exportsFor(request:Request,id:string,kind:string,format:string){
  const draw=(s:string,size=9)=>{if(y<35){page=pdf.addPage([842,595]);y=555;}page.drawText(s.replace(/[^\x20-\x7e\xa0-\xff]/g,' ').slice(0,145),{x:28,y,size,font});y-=19;};
  draw('Passage - '+kind+' - '+new Date().toLocaleDateString('fr-FR'),16);draw(columns.join(' | '));
  records.forEach(r=>{const content=columns.map(c=>c+': '+String(r[c]??'')).join(' | ');for(let n=0;n<content.length;n+=135)draw(content.slice(n,n+135));y-=5;});
- return new Response(await pdf.save() as any,{headers:{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+kind+'.pdf"','Cache-Control':'no-store'}});
+ return new Response(await pdf.save() as any,{headers:{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="passage-'+kind+'.pdf"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
  }
  const cell=(s:any)=>'"'+String(s??'').replace(/^[=+@-]/,"'$&").replace(/"/g,'""')+'"';
- return new Response('\ufeff'+[columns,...records.map(r=>columns.map(c=>r[c]))].map(r=>r.map(cell).join(';')).join('\r\n'),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="'+kind+'.csv"','Cache-Control':'no-store'}});
+ return new Response('\ufeff'+[columns,...records.map(r=>columns.map(c=>r[c]))].map(r=>r.map(cell).join(';')).join('\r\n'),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="passage-'+kind+'.csv"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
 }
 async function handle(request:Request,context:any){
  const params=await context.params,path=(params.path||[]) as string[],[section,id,action]=path,url=new URL(request.url),post=request.method==='POST';
- if(post){const source=request.headers.get('origin');requireValue(!source||source===url.origin,403,'Origine de requête non autorisée.');requireValue(Number(request.headers.get('content-length')||0)<262144,413,'Requête trop volumineuse.');}
+ if(post){const source=request.headers.get('origin');requireValue(!source||source===url.origin,403,'Origine de requête non autorisée.');requireValue(Number(request.headers.get('content-length')||0)<=MAX_BODY,413,'Requête trop volumineuse.');}
  if(section==='webhook'&&post)return webhook(request);
  if(section==='meta')return response({mode:demo()?'demo':'live'});
- if(section==='auth'&&post)return auth(request,id,await request.json());
+ if(section==='auth'&&post)return id==='logout'?logout(request):auth(request,id,await readJson(request));
  if(section==='dashboard')return response(await dashboard(request,url.searchParams.get('collective')||''));
  if(section==='events'){
- if(!post){if(demo()){await identity(request);await initialize(request);}await maintenance();return response({events:await publicEvents(id),mode:demo()?'demo':'live'});}
- const data:any=await request.json();
+ if(!post){if(demo()){await identity(request);await initialize(request);}return response({events:await publicEvents(id),mode:demo()?'demo':'live'});}
+ const data:any=await readJson(request);
  if(id&&action==='cancel')return response(await cancelEvent(request,id));
  return response(await saveEvent(request,data,id),id?200:201);
  }
- if(section==='reserve'&&post){if(demo()){await identity(request);await initialize(request);}return response(await reserve(await request.json()),201);}
+ if(section==='reserve'&&post){if(demo()){await identity(request);await initialize(request);}return response(await reserve(request,await readJson(request)),201);}
  if(section==='orders'){
+ await rateLimit(request,'orders',600,60000);
  if(post){
- const data:any=await request.json();
+ const data:any=await readJson(request);
  if(action==='checkout')return response(await checkout(request,id));
- if(action==='cancel-ticket')return response(await cancelTicket(z.string().parse(data.ticketId),id,null));
+ if(action==='cancel-ticket')return response(await cancelTicket(z.string().max(100).parse(data.ticketId),id,null));
  if(action==='cancel'){const o=await getOrder(id);requireValue(o.status==='pending',409,'Cette commande ne peut plus être libérée.');await stmt("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'",o.id).run();await maintenance();return response({ok:true});}
  }
- await maintenance();const order=await getOrder(id);
- if(action==='pdf'){requireValue(order.tickets.length,409,'Les billets sont disponibles après confirmation du paiement.');return new Response(await pdfTickets(order) as any,{headers:{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="billets.pdf"','Cache-Control':'no-store'}});}
- if(action==='calendar')return new Response(calendar(order.event),{headers:{'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'attachment; filename="evenement.ics"'}});
+ await maybeMaintenance();const order=await getOrder(id);
+ if(action==='pdf'){requireValue(order.tickets.length,409,'Les billets sont disponibles après confirmation du paiement.');return new Response(await pdfTickets(order) as any,{headers:{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="billets.pdf"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});}
+ if(action==='calendar')return new Response(calendar(order.event),{headers:{'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'attachment; filename="evenement.ics"','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
  return response(order);
  }
  if(section==='waitlist'&&post){
- const data=z.object({typeId:z.string(),email:emailSchema,name:z.string().trim().min(1).max(120),quantity:z.number().int().min(1).max(20)}).parse(await request.json());
- await maintenance();
+ await rateLimit(request,'waitlist',30,60000);
+ const data=z.object({typeId:z.string().max(100),email:emailSchema,name:z.string().trim().min(1).max(120),quantity:z.number().int().min(1).max(20)}).parse(await readJson(request));
+ await maybeMaintenance();
  const type=await one('SELECT t.*,e.max_quantity,e.doors_at,e.status FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE t.id=?',data.typeId);
  requireValue(type&&type.status==='on_sale'&&type.doors_at>now(),409,'La liste d’attente est fermée.');
  requireValue(data.quantity<=type.max_quantity,400,'Quantité trop élevée.');
@@ -156,15 +161,25 @@ async function handle(request:Request,context:any){
  if(duplicate)return response({ok:true});
  throw new HttpError(409,'La disponibilité a changé. Actualisez l’événement avant de réessayer.');
  }
- await maintenance();return response({ok:true},201);
+ await maybeMaintenance();return response({ok:true},201);
  }
  if(section==='scanner-links'&&post){
- const data:any=await request.json();const {event,user}=await eventAccess(request,data.eventId),token=randomToken(),[start,end]=dayBounds(event.starts_at,event.timezone);
- await stmt('INSERT INTO scanner_links(id,event_id,token,valid_from,valid_until,created_at) VALUES(?,?,?,?,?,?)',uid(),event.id,token,demo()?now()-60000:start,demo()?now()+7*86400000:end,now()).run();
+ await rateLimit(request,'scanner-links',10,60000);
+ const data:any=await readJson(request);
+ if(id&&action==='revoke'){
+ const link=await one('SELECT event_id FROM scanner_links WHERE id=?',id);requireValue(link,404,'Lien de contrôle introuvable.');
+ const {event,user}=await eventAccess(request,link.event_id);
+ await stmt('UPDATE scanner_links SET revoked_at=? WHERE id=?',now(),id).run();
+ await audit(user.email,'revoke_scanner_link',id,event.collective_id);
+ return response({ok:true});
+ }
+ const {event,user}=await eventAccess(request,z.string().max(100).parse(data.eventId)),token=randomToken(),[start,end]=dayBounds(event.starts_at,event.timezone),linkId=uid();
+ await stmt('INSERT INTO scanner_links(id,event_id,token,valid_from,valid_until,created_at) VALUES(?,?,?,?,?,?)',linkId,event.id,token,demo()?now()-60000:start,demo()?now()+7*86400000:end,now()).run();
  await audit(user.email,'create_scanner_link',event.id,event.collective_id);
- return response({token,url:'/controle/'+token,demo:demo(),validFrom:demo()?now():start,validUntil:demo()?now()+7*86400000:end});
+ return response({id:linkId,token,url:'/controle/'+token,demo:demo(),validFrom:demo()?now():start,validUntil:demo()?now()+7*86400000:end});
  }
  if(section==='scanner'){
+ await rateLimit(request,'scanner',300,60000);
  if(!post)return response(await scannerManifest(await scanner(request,id)));
  // Limit the bytes actually received, including requests without Content-Length.
  const data=await scannerBody(request);
@@ -181,37 +196,45 @@ async function handle(request:Request,context:any){
  const input=z.object({code:z.string().min(1).max(1000),deviceId}).parse(data);return response(await scan(id,input.code,input.deviceId));
  }
  if(section==='refunds'&&post){
- const data=z.object({ticketId:z.string()}).parse(await request.json()),t=await one('SELECT o.event_id FROM tickets b JOIN orders o ON o.id=b.order_id WHERE b.id=?',data.ticketId);
- requireValue(t,404,'Billet introuvable.');const {user}=await eventAccess(request,t.event_id);return response(await cancelTicket(data.ticketId,undefined,user));
+ await rateLimit(request,'refunds',30,60000);
+ const data=z.object({ticketId:z.string().max(100),force:z.boolean().optional()}).parse(await readJson(request)),t=await one('SELECT o.event_id FROM tickets b JOIN orders o ON o.id=b.order_id WHERE b.id=?',data.ticketId);
+ requireValue(t,404,'Billet introuvable.');const {user}=await eventAccess(request,t.event_id);
+ requireValue(!data.force||user.admin,403,'La dérogation est réservée à l’administrateur.');
+ return response(await cancelTicket(data.ticketId,undefined,user,!!data.force));
  }
  if(section==='remove-waitlist'&&post){
- const data:any=await request.json();const w=await one('SELECT w.*,t.event_id FROM waitlist w JOIN ticket_types t ON t.id=w.type_id WHERE w.id=?',data.id);requireValue(w,404,'Inscription introuvable.');
+ await rateLimit(request,'remove-waitlist',30,60000);
+ const data:any=await readJson(request);const w=await one('SELECT w.*,t.event_id FROM waitlist w JOIN ticket_types t ON t.id=w.type_id WHERE w.id=?',z.string().max(100).parse(data.id));requireValue(w,404,'Inscription introuvable.');
  const {user,event}=await eventAccess(request,w.event_id);
  await database().batch([stmt("UPDATE waitlist SET status='removed' WHERE id=?",w.id),...(w.order_id?[stmt("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'",w.order_id)]:[])]);
  await audit(user.email,'remove_waitlist',w.id,event.collective_id);await maintenance();return response({ok:true});
  }
  if(section==='export')return exportsFor(request,id,url.searchParams.get('kind')||'participants',url.searchParams.get('format')||'csv');
  if(section==='admin'&&post){
- const user=await access(request,undefined,true),data=await request.json();
+ await rateLimit(request,'admin',30,60000);
+ const user=await access(request,undefined,true),data=await readJson(request);
  if(id==='collective'){
  const input=z.object({name:z.string().trim().min(2).max(120),color:z.string().regex(/^#[a-fA-F0-9]{6}$/).default('#132a3b')}).parse(data),cid=uid();
  await stmt('INSERT INTO collectives(id,name,color,created_at) VALUES(?,?,?,?)',cid,input.name,input.color,now()).run();await audit(user.email,'create_collective',cid,cid);return response({id:cid});
  }
  if(id==='member'){
- const input=z.object({collectiveId:z.string(),email:emailSchema}).parse(data);requireValue(await one('SELECT id FROM collectives WHERE id=?',input.collectiveId),404,'Collectif introuvable.');
+ const input=z.object({collectiveId:z.string().max(100),email:emailSchema}).parse(data);requireValue(await one('SELECT id FROM collectives WHERE id=?',input.collectiveId),404,'Collectif introuvable.');
  await database().batch([stmt("INSERT OR IGNORE INTO members(id,email,collective_id,role) VALUES(?,?,?,'organizer')",uid(),input.email,input.collectiveId),job('email',{to:input.email,subject:'Invitation à votre espace Passage',text:'Vous avez été invité à organiser les événements de votre collectif. Connectez-vous avec votre compte ChatGPT associé à cette adresse : '+origin(request)},'invite-'+input.collectiveId+'-'+input.email)]);
  await audit(user.email,'invite_member',input.email,input.collectiveId);return response({ok:true});
  }
  if(id==='account'){
- const input=z.object({collectiveId:z.string(),stripeAccount:z.string().regex(/^acct_[a-zA-Z0-9]+$/)}).parse(data);await stmt('UPDATE collectives SET stripe_account=? WHERE id=?',input.stripeAccount,input.collectiveId).run();await audit(user.email,'configure_account',input.collectiveId,input.collectiveId);return response({ok:true});
+ const input=z.object({collectiveId:z.string().max(100),stripeAccount:z.string().regex(/^acct_[a-zA-Z0-9]{1,64}$/)}).parse(data);
+ requireValue(await one('SELECT id FROM collectives WHERE id=?',input.collectiveId),404,'Collectif introuvable.');
+ if(!demo())await verifyStripeAccount(input.stripeAccount);
+ await stmt('UPDATE collectives SET stripe_account=? WHERE id=?',input.stripeAccount,input.collectiveId).run();await audit(user.email,'configure_account',input.collectiveId,input.collectiveId);return response({ok:true});
  }
  }
  if(section==='maintenance'&&post){
- const token=request.headers.get('authorization');
- if(!(runtime.JOB_SECRET&&token==='Bearer '+runtime.JOB_SECRET))await access(request,undefined,true);
+ await rateLimit(request,'maintenance',60,60000);
+ if(!await secretMatches(request.headers.get('authorization'),runtime.JOB_SECRET))await access(request,undefined,true);
  await maintenance();await processJobs(50);return response({ok:true});
  }
  throw new HttpError(404,'Cette action est introuvable.');
 }
 export async function GET(request:Request,context:any){try{return await handle(request,context);}catch(e){console.error('Billetterie:',e instanceof Error?e.message:e);return response({error:e instanceof HttpError?e.message:'Le service est momentanément indisponible.'},e instanceof HttpError?e.status:503);}}
-export async function POST(request:Request,context:any){try{const result=await handle(request,context);await processJobs(10);return result;}catch(e){console.error('Billetterie:',e instanceof Error?e.message:e);return response({error:e instanceof HttpError?e.message:e instanceof z.ZodError?'Vérifiez les champs du formulaire.':'L’opération n’a pas abouti. Réessayez.'},e instanceof HttpError?e.status:e instanceof z.ZodError?400:503);}}
+export async function POST(request:Request,context:any){try{const result=await handle(request,context);await maybeProcessJobs(10);return result;}catch(e){console.error('Billetterie:',e instanceof Error?e.message:e);return response({error:e instanceof HttpError?e.message:e instanceof z.ZodError?'Vérifiez les champs du formulaire.':'L’opération n’a pas abouti. Réessayez.'},e instanceof HttpError?e.status:e instanceof z.ZodError?400:503);}}

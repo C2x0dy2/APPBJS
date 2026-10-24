@@ -5,7 +5,9 @@ import QRCode from 'qrcode';
 
 export const now=()=>Date.now(), uid=()=>crypto.randomUUID();
 export const runtime=env as unknown as Record<string,any>;
-export const demo=()=>runtime.DEMO_MODE!=='false'&&!runtime.STRIPE_SECRET_KEY;
+// Démo explicite uniquement. En production, l'absence de DEMO_MODE=true ne bascule
+// jamais en démo ; en développement, la démo reste le comportement par défaut.
+export const demo=()=>runtime.DEMO_MODE==='true'||(import.meta.env.DEV&&runtime.DEMO_MODE!=='false'&&!runtime.STRIPE_SECRET_KEY);
 export class HttpError extends Error { constructor(public status:number,message:string){super(message);} }
 export function requireValue(value:any,status:number,message:string):asserts value {if(!value)throw new HttpError(status,message);}
 export function database():D1Database {requireValue(runtime.DB,503,'Le stockage est indisponible. Réessayez dans un instant.');return runtime.DB;}
@@ -13,21 +15,66 @@ export const stmt=(sql:string,...params:any[])=>database().prepare(sql).bind(...
 export async function rows(sql:string,...params:any[]):Promise<any[]>{return (await stmt(sql,...params).all()).results||[];}
 export async function one(sql:string,...params:any[]):Promise<any>{return stmt(sql,...params).first();}
 export const emailSchema=z.string().trim().email().max(200).transform(v=>v.toLowerCase());
-export function response(data:any,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}});}
+export const MAX_BODY=262144;
+export const SESSION_COOKIE=import.meta.env.DEV?'passage_session':'__Host-passage_session';
+const LEGACY_SESSION_COOKIE='passage_session';
+export function response(data:any,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});}
 function base64(bytes:Uint8Array){let s='';for(const b of bytes)s+=String.fromCharCode(b);return btoa(s);}
 const b64url=(bytes:Uint8Array)=>base64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 const unb64=(s:string)=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
 export const randomToken=()=>b64url(crypto.getRandomValues(new Uint8Array(32)));
 async function hash(s:string){return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))));}
-export const origin=(request?:Request)=>runtime.APP_URL||(request&&import.meta.env.DEV?new URL(request.url).origin:'https://billetterie-collectifs-dioulo.bold-llama-1352.chatgpt.site');
+export const tokenHash=(s:string)=>hash(s);
+async function wrappingKey(){const secret=runtime.KEY_ENCRYPTION_SECRET;if(!secret)return null;const raw=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(secret))));return crypto.subtle.importKey('raw',raw,{name:'AES-GCM'},false,['encrypt','decrypt']);}
+async function encryptPrivate(value:any){
+ const key=await wrappingKey();if(!key)return JSON.stringify(value);
+ const iv=crypto.getRandomValues(new Uint8Array(12));
+ const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify(value)));
+ return JSON.stringify({v:1,iv:b64url(iv),ct:b64url(new Uint8Array(ct))});
+}
+async function decryptPrivate(value:string){
+ const parsed=JSON.parse(value);if(parsed?.v!==1)return parsed;
+ const key=await wrappingKey();requireValue(key,503,'La clé de chiffrement est absente : impossible de signer un billet.');
+ return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(parsed.iv)},key,unb64(parsed.ct))));
+}
+export const origin=(request?:Request)=>{
+ if(runtime.APP_URL)return String(runtime.APP_URL).replace(/\/$/,'');
+ if(request)return new URL(request.url).origin;
+ if(demo())return 'http://127.0.0.1:5173';
+ throw new HttpError(503,'APP_URL n’est pas configuré.');
+};
 export async function audit(actor:string,action:string,subject:string,collectiveId:string|null,detail:any={}){await stmt('INSERT INTO audit(id,collective_id,actor,action,subject,detail,created_at) VALUES(?,?,?,?,?,?,?)',uid(),collectiveId,actor,action,subject,JSON.stringify(detail),now()).run();}
+export async function readJson(request:Request){
+ const declared=Number(request.headers.get('content-length')||0);
+ requireValue(!Number.isFinite(declared)||declared<=MAX_BODY,413,'Requête trop volumineuse.');
+ const raw=await request.text();
+ requireValue(new TextEncoder().encode(raw).length<=MAX_BODY,413,'Requête trop volumineuse.');
+ if(!raw.trim())return {};
+ try{return JSON.parse(raw);}catch{throw new HttpError(400,'Requête invalide.');}
+}
+export async function rateLimitKey(key:string,limit:number,windowMs:number){
+ const t=now(),row=await one('SELECT count,window_start FROM rate_limits WHERE key=?',key);
+ if(!row||Number(row.window_start)<=t-windowMs)await stmt('INSERT OR REPLACE INTO rate_limits(key,count,window_start,expires_at) VALUES(?,?,?,?)',key,1,t,t+windowMs).run();
+ else{requireValue(Number(row.count)<limit,429,'Trop de requêtes. Réessayez dans un instant.');await stmt('UPDATE rate_limits SET count=count+1 WHERE key=?',key).run();}
+}
+export async function rateLimit(request:Request,bucket:string,limit:number,windowMs:number){
+ const ip=(request.headers.get('cf-connecting-ip')||request.headers.get('x-forwarded-for')||'local').split(',')[0].trim().slice(0,80)||'local';
+ return rateLimitKey(bucket+':'+ip,limit,windowMs);
+}
+export async function secretMatches(provided:string|null,expected:string|undefined){
+ if(!provided||!expected)return false;
+ const digest=(s:string)=>crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));
+ const a=new Uint8Array(await digest(provided)),b=new Uint8Array(await digest('Bearer '+expected));
+ let diff=a.length^b.length;for(let n=0;n<Math.max(a.length,b.length);n++)diff|=(a[n]||0)^(b[n]||0);
+ return diff===0;
+}
 export function job(kind:string,payload:any,id=uid(),changedOnly=false){return stmt("INSERT OR IGNORE INTO jobs(id,kind,payload,status,attempts,next_at,created_at) "+(changedOnly?"SELECT ?,?,?,'pending',0,?,? WHERE changes()=1":"VALUES(?,?,?,'pending',0,?,?)"),id,kind,JSON.stringify(payload),now(),now());}
-export async function initialize(request:Request){
+export async function initialize(request:Request,email?:string){
  if(await one("SELECT value FROM settings WHERE key='initialized'"))return;
- requireValue(demo()||(runtime.ADMIN_EMAIL&&request.headers.get('oai-authenticated-user-email')?.toLowerCase()===runtime.ADMIN_EMAIL.toLowerCase()),503,'L’administrateur doit initialiser la billetterie.');
+ requireValue(demo()||(runtime.ADMIN_EMAIL&&email?.toLowerCase()===String(runtime.ADMIN_EMAIL).toLowerCase()),503,'L’administrateur doit initialiser la billetterie.');
  const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
  await database().batch([
- stmt("INSERT OR IGNORE INTO settings(key,value) VALUES('sign_private',?)",JSON.stringify(await crypto.subtle.exportKey('jwk',pair.privateKey))),
+ stmt("INSERT OR IGNORE INTO settings(key,value) VALUES('sign_private',?)",await encryptPrivate(await crypto.subtle.exportKey('jwk',pair.privateKey))),
  stmt("INSERT OR IGNORE INTO settings(key,value) VALUES('sign_public',?)",JSON.stringify(await crypto.subtle.exportKey('jwk',pair.publicKey)))]);
  if(!demo()){await stmt("INSERT OR IGNORE INTO settings(key,value) VALUES('initialized','true')").run();return;}
  await database().batch([stmt("INSERT OR IGNORE INTO collectives(id,name,color,created_at) VALUES('c1','Collectif Onde','#132a3b',?)",now()),
@@ -47,46 +94,69 @@ export async function identity(request:Request){
  if(import.meta.env.DEV&&demo()&&['localhost','127.0.0.1'].includes(new URL(request.url).hostname))return 'local@demo.test';
  requireValue(email,401,'Connectez-vous pour accéder à votre espace.');return email;
 }
+function cookieToken(request:Request,name:string){return new RegExp('(?:^|;\\s*)'+name+'=([^;]+)').exec(request.headers.get('cookie')||'')?.[1];}
+export async function sessionFor(request:Request){
+ const token=cookieToken(request,SESSION_COOKIE)||(import.meta.env.DEV?cookieToken(request,LEGACY_SESSION_COOKIE):null);
+ if(!token)return null;
+ return one('SELECT * FROM sessions WHERE token=? AND expires_at>?',await hash(token),now());
+}
+// L'autorisation ne repose jamais sur l'en-tête d'identité : seule la session
+// issue du code à usage unique fait foi. L'en-tête sert uniquement à savoir à
+// quelle adresse envoyer le code de connexion.
 export async function access(request:Request,collectiveId?:string,adminOnly=false){
- const email=await identity(request);await initialize(request);
- if(demo())return {email,admin:true,demo:true};
- const admin=!!runtime.ADMIN_EMAIL&&email===runtime.ADMIN_EMAIL.toLowerCase();
+ if(demo()){const email=await identity(request);await initialize(request,email);return {email,admin:true,demo:true};}
+ const session=await sessionFor(request);
+ requireValue(session,428,'Confirmez votre connexion avec le code reçu par e-mail.');
+ const email=String(session.email).toLowerCase();
+ await initialize(request,email);
+ const admin=!!runtime.ADMIN_EMAIL&&email===String(runtime.ADMIN_EMAIL).toLowerCase();
  const memberships=await rows('SELECT * FROM members WHERE email=?',email);
  requireValue(admin||memberships.length,403,'Vous ne faites pas partie de ce collectif.');
- const token=/passage_session=([^;]+)/.exec(request.headers.get('cookie')||'')?.[1];
- const session=token&&await one('SELECT * FROM sessions WHERE token=? AND email=? AND expires_at>?',token,email,now());
- requireValue(session,428,'Confirmez votre connexion avec le code reçu par e-mail.');
  requireValue(!adminOnly||admin,403,'Cette action est réservée à l’administrateur.');
  requireValue(!collectiveId||admin||memberships.some(m=>m.collective_id===collectiveId&&m.role==='organizer'),403,'Ce collectif est inaccessible.');
  return {email,admin,demo:false};
 }
+async function isMember(email:string){return email===String(runtime.ADMIN_EMAIL||'').toLowerCase()||!!await one('SELECT id FROM members WHERE email=?',email);}
 export async function auth(request:Request,action:string,data:any){
- const email=await identity(request);
  requireValue(!demo(),400,'La démonstration ne nécessite pas de code.');
- requireValue(email===(runtime.ADMIN_EMAIL||'').toLowerCase()||await one('SELECT id FROM members WHERE email=?',email),403,'Vous ne faites pas partie de cet espace.');
+ const email=await identity(request);
+ await rateLimit(request,'auth',20,60000);
  if(action==='request'){
  requireValue(runtime.RESEND_API_KEY&&runtime.MAIL_FROM,503,'L’envoi des codes de connexion n’est pas encore configuré.');
  const recent=await one('SELECT count(*) n FROM challenges WHERE email=? AND expires_at>?',email,now()+9*60000);
  requireValue(recent.n<3,429,'Attendez une minute avant de demander un nouveau code.');
  const code=String(crypto.getRandomValues(new Uint32Array(1))[0]%1000000).padStart(6,'0'),id=uid();
  await stmt('INSERT INTO challenges(id,email,code_hash,expires_at) VALUES(?,?,?,?)',id,email,await hash(id+code),now()+600000).run();
+ // Réponse identique pour tous : l'existence d'un compte n'est pas révélée.
+ if(await isMember(email)){
  await sendEmail({to:email,subject:'Votre code de connexion Passage',text:'Votre code : '+code+'. Valable 10 minutes. Ne le communiquez à personne.'},'otp-'+id);
+ await audit(email,'login_request',id,null);
+ }
  return response({id});
  }
  const id=z.string().uuid().parse(data.id),code=z.string().regex(/^\d{6}$/).parse(data.code);
  const c=await one('SELECT * FROM challenges WHERE id=? AND email=?',id,email);
  requireValue(c&&c.expires_at>now()&&!c.used&&c.attempts<5,400,'Ce code a expiré. Demandez-en un nouveau.');
  await stmt('UPDATE challenges SET attempts=attempts+1 WHERE id=?',id).run();
- requireValue(c.code_hash===await hash(id+code),400,'Code incorrect.');
+ if(c.code_hash!==await hash(id+code)){await audit(email,'login_failed',id,null,{reason:'bad_code'});throw new HttpError(400,'Code incorrect.');}
  const claim=await stmt('UPDATE challenges SET used=1 WHERE id=? AND used=0 AND attempts<=5',id).run();
  requireValue(claim.meta.changes,400,'Ce code a déjà été utilisé.');
- const token=randomToken();await stmt('INSERT INTO sessions(token,email,expires_at) VALUES(?,?,?)',token,email,now()+8*3600000).run();
+ requireValue(await isMember(email),400,'Ce code a expiré. Demandez-en un nouveau.');
+ const token=randomToken();await stmt('INSERT INTO sessions(token,email,expires_at) VALUES(?,?,?)',await hash(token),email,now()+8*3600000).run();
+ await audit(email,'login_success',id,null);
  const res=response({ok:true});
- res.headers.set('Set-Cookie','passage_session='+token+'; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800'+(import.meta.env.DEV?'':'; Secure'));return res;
+ res.headers.set('Set-Cookie',SESSION_COOKIE+'='+token+'; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800'+(import.meta.env.DEV?'':'; Secure'));return res;
+}
+export async function logout(request:Request){
+ const token=cookieToken(request,SESSION_COOKIE)||(import.meta.env.DEV?cookieToken(request,LEGACY_SESSION_COOKIE):null);
+ if(token)await stmt('DELETE FROM sessions WHERE token=?',await hash(token)).run();
+ const res=response({ok:true});
+ res.headers.set('Set-Cookie',SESSION_COOKIE+'=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+(import.meta.env.DEV?'':'; Secure'));
+ return res;
 }
 export async function signTicket(eventId:string,ticketId:string){
  const payload=b64url(new TextEncoder().encode(JSON.stringify({e:eventId,t:ticketId})));
- const key=JSON.parse((await one("SELECT value FROM settings WHERE key='sign_private'")).value);
+ const key=await decryptPrivate((await one("SELECT value FROM settings WHERE key='sign_private'")).value);
  const privateKey=await crypto.subtle.importKey('jwk',key,{name:'ECDSA',namedCurve:'P-256'},false,['sign']);
  const sig=await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},privateKey,new TextEncoder().encode(payload));
  return 'PASS1.'+payload+'.'+b64url(new Uint8Array(sig));
@@ -107,7 +177,13 @@ export async function publicEvents(id?:string){
  return events;
 }
 export async function maintenance(){
- await stmt('DELETE FROM scanner_sessions WHERE sync_until<=?',now()).run();
+ await database().batch([
+  stmt('DELETE FROM scanner_sessions WHERE sync_until<=?',now()),
+  stmt('DELETE FROM sessions WHERE expires_at<=?',now()),
+  stmt('DELETE FROM challenges WHERE expires_at<=?',now()-86400000),
+  stmt('DELETE FROM rate_limits WHERE expires_at<=?',now()),
+  stmt('DELETE FROM audit WHERE created_at<=?',now()-365*86400000)]);
+ const base=(()=>{try{return origin();}catch{return '';}})();
  const expired=await rows("SELECT id,email,token,event_id,checkout_id FROM orders WHERE status='pending' AND expires_at<=?",now());
  for(const o of expired)await database().batch([stmt("UPDATE orders SET status='expired' WHERE id=? AND status='pending' AND expires_at<=?",o.id,now()),job('email',{to:o.email,subject:'Votre réservation a expiré',text:'Les places non payées ont été libérées. Vous pouvez consulter la billetterie pour réserver à nouveau.'},'expired-'+o.id),...(o.checkout_id?[job('expire_checkout',{checkoutId:o.checkout_id,eventId:o.event_id},'expire-checkout-'+o.id)]:[])]);
  await stmt("UPDATE waitlist SET status='expired' WHERE status='offered' AND order_id IN (SELECT id FROM orders WHERE status IN ('expired','cancelled'))").run();
@@ -121,16 +197,30 @@ export async function maintenance(){
  stmt("INSERT INTO orders(id,event_id,email,name,token,total,expires_at,created_at,demo) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM waitlist WHERE id=? AND status='waiting')",o.id,t.event_id,head.email,head.name,o.token,price*head.quantity,o.expires,now(),demo()?1:0,head.id),
  stmt("UPDATE waitlist SET status='offered',order_id=? WHERE id=? AND status='waiting'",o.id,head.id),
  stmt("INSERT INTO order_items(id,order_id,type_id,quantity,unit_price) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM orders WHERE id=?)",uid(),o.id,t.id,head.quantity,price,o.id),
- job('email',{to:head.email,subject:'Des places sont disponibles : '+t.name,text:'Vos '+head.quantity+' places vous sont réservées jusqu’au '+new Date(o.expires).toLocaleString('fr-FR',{timeZone:'Europe/Paris'})+'. Retrouvez votre réservation : '+origin()+'/commande/'+o.token},'offer-'+head.id)]);
+ job('email',{to:head.email,subject:'Des places sont disponibles : '+t.name,text:'Vos '+head.quantity+' places vous sont réservées jusqu’au '+new Date(o.expires).toLocaleString('fr-FR',{timeZone:'Europe/Paris'})+'. Retrouvez votre réservation : '+base+'/commande/'+o.token},'offer-'+head.id)]);
  }catch(e){if(String(e).includes('STOCK'))break;throw e;}
  }
  await stmt("UPDATE waitlist SET status='closed' WHERE status='waiting' AND type_id IN (SELECT t.id FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE e.doors_at<=? OR e.status='cancelled')",now()).run();
  const reminders=await rows("SELECT o.id,o.email,o.token,e.name FROM orders o JOIN events e ON e.id=o.event_id WHERE o.status='paid' AND e.starts_at>? AND e.starts_at<=? AND e.status<>'cancelled'",now(),now()+86400000);
- if(reminders.length)await database().batch(reminders.map(o=>job('email',{to:o.email,subject:'À demain : '+o.name,text:'Retrouvez vos billets : '+origin()+'/commande/'+o.token},'reminder-'+o.id)));
+ if(reminders.length)await database().batch(reminders.map(o=>job('email',{to:o.email,subject:'À demain : '+o.name,text:'Retrouvez vos billets : '+base+'/commande/'+o.token},'reminder-'+o.id)));
 }
-export async function reserve(data:any){
- const input=z.object({eventId:z.string(),email:emailSchema,name:z.string().trim().min(1).max(120),items:z.array(z.object({typeId:z.string(),quantity:z.number().int().positive().max(20)})).min(1).max(10)}).parse(data);
+let maintenanceNextAt=0,jobsNextAt=0;
+export async function maybeMaintenance(){
+ if(now()<maintenanceNextAt)return;
+ maintenanceNextAt=now()+15000;
  await maintenance();
+}
+export async function maybeProcessJobs(limit=10){
+ if(now()<jobsNextAt)return;
+ jobsNextAt=now()+15000;
+ await processJobs(limit);
+}
+export async function reserve(request:Request,data:any){
+ const input=z.object({eventId:z.string().max(100),email:emailSchema,name:z.string().trim().min(1).max(120),items:z.array(z.object({typeId:z.string().max(100),quantity:z.number().int().positive().max(20)})).min(1).max(10)}).parse(data);
+ await rateLimit(request,'reserve',600,60000);
+ await rateLimitKey('reserve-email:'+input.email,10,3600000);
+ requireValue((await one("SELECT count(*) n FROM orders WHERE email=? AND status='pending' AND expires_at>?",input.email,now())).n<2,429,'Trop de réservations en cours pour cette adresse.');
+ await maybeMaintenance();
  const event=await one('SELECT * FROM events WHERE id=?',input.eventId);
  requireValue(event&&event.status==='on_sale'&&event.doors_at>now(),409,'La réservation est fermée pour cet événement.');
  const qty=input.items.reduce((s,i)=>s+i.quantity,0);requireValue(qty<=event.max_quantity,400,'Maximum '+event.max_quantity+' places par commande.');
@@ -156,10 +246,20 @@ export async function getOrder(token:string){
 async function stripe(path:string,params:URLSearchParams,account:string,idempotency:string){
  requireValue(runtime.STRIPE_SECRET_KEY,503,'Les paiements par carte ne sont pas encore activés.');
  const res=await fetch('https://api.stripe.com/v1/'+path,{method:'POST',headers:{Authorization:'Bearer '+runtime.STRIPE_SECRET_KEY,'Stripe-Account':account,'Idempotency-Key':idempotency,'Content-Type':'application/x-www-form-urlencoded'},body:params});
- const result:any=await res.json();requireValue(res.ok,502,result.error?.message||'Le prestataire de paiement est indisponible.');return result;
+ const result:any=await res.json().catch(()=>({}));
+ if(!res.ok){console.error('Stripe:',res.status,String(result.error?.type||'error').slice(0,80));throw new HttpError(502,'Le prestataire de paiement est indisponible. Réessayez plus tard.');}
+ return result;
+}
+export async function verifyStripeAccount(account:string){
+ requireValue(runtime.STRIPE_SECRET_KEY,503,'Les paiements par carte ne sont pas encore activés.');
+ const res=await fetch('https://api.stripe.com/v1/accounts/'+encodeURIComponent(account),{headers:{Authorization:'Bearer '+runtime.STRIPE_SECRET_KEY}});
+ const result:any=await res.json().catch(()=>({}));
+ requireValue(res.ok&&result.id===account,400,'Compte Stripe introuvable.');
+ requireValue(result.charges_enabled===true,400,'Ce compte Stripe n’accepte pas encore les paiements.');
 }
 export async function accountFor(eventId:string){const c=await one('SELECT c.* FROM collectives c JOIN events e ON e.collective_id=c.id WHERE e.id=?',eventId);requireValue(c?.stripe_account,503,'Le compte d’encaissement de ce collectif reste à configurer.');return c.stripe_account;}
 export async function checkout(request:Request,token:string){
+ await rateLimit(request,'checkout',300,60000);
  const o=await getOrder(token);requireValue(o.status==='pending'&&o.expires_at>now(),409,'La réservation a expiré.');
  if(o.total===0){await completePayment(o.id,'free-'+o.id,0);return {free:true};}
  if(demo()){await identity(request);await completePayment(o.id,'demo-'+o.id,o.total);return {demo:true};}
@@ -188,22 +288,25 @@ export async function completePayment(orderId:string,paymentId:string,amount:num
 }
 export async function webhook(request:Request){
  requireValue(runtime.STRIPE_WEBHOOK_SECRET,503,'Notifications de paiement non configurées.');
- const raw=await request.text();requireValue(raw.length<262144,413,'Notification trop volumineuse.');
+ const raw=await request.text();requireValue(new TextEncoder().encode(raw).length<=MAX_BODY,413,'Notification trop volumineuse.');
  const header=request.headers.get('stripe-signature')||'',timestamp=header.split(',').find(p=>p.startsWith('t='))?.slice(2),signatures=header.split(',').filter(p=>p.startsWith('v1=')).map(p=>p.slice(3));
  requireValue(timestamp&&Math.abs(now()/1000-Number(timestamp))<=300,400,'Notification expirée.');
  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(runtime.STRIPE_WEBHOOK_SECRET),{name:'HMAC',hash:'SHA-256'},false,['verify']);let valid=false;
  for(const hex of signatures){if(!/^[a-f0-9]{64}$/.test(hex))continue;const bytes=Uint8Array.from(hex.match(/../g)!,h=>parseInt(h,16));if(await crypto.subtle.verify('HMAC',key,bytes,new TextEncoder().encode(timestamp+'.'+raw)))valid=true;}
  requireValue(valid,400,'Signature de paiement invalide.');
- const notification=JSON.parse(raw),session=notification.data?.object;
- if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(notification.type)&&session.payment_status==='paid'){
+ let notification:any;try{notification=JSON.parse(raw);}catch{throw new HttpError(400,'Notification invalide.');}
+ const session=notification?.data?.object;
+ if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(notification?.type)&&session?.payment_status==='paid'){
+ requireValue(typeof session.client_reference_id==='string'&&typeof session.payment_intent==='string',400,'Notification incomplète.');
  const order=await one('SELECT * FROM orders WHERE id=?',session.client_reference_id);requireValue(order,404,'Commande inconnue.');
  requireValue(session.currency==='eur'&&notification.account===await accountFor(order.event_id)&&order.checkout_id===session.id&&!order.demo,400,'Notification incohérente.');
  await completePayment(order.id,session.payment_intent,session.amount_total);
  }return response({received:true});
 }
-export async function cancelTicket(ticketId:string,token:string|undefined,actor:any){
+export async function cancelTicket(ticketId:string,token:string|undefined,actor:any,allowUsed=false){
  const ticket=await one('SELECT b.*,o.token,o.event_id,o.payment_id,o.demo,o.email,o.id order_id,i.unit_price,e.cancel_until,e.collective_id FROM tickets b JOIN orders o ON o.id=b.order_id JOIN events e ON e.id=o.event_id JOIN order_items i ON i.order_id=o.id AND i.type_id=b.type_id WHERE b.id=?',ticketId);requireValue(ticket,404,'Billet introuvable.');
- if(token){requireValue(ticket.token===token,403,'Lien invalide.');requireValue(now()<ticket.cancel_until,409,'Le délai d’annulation est dépassé.');requireValue(!ticket.scanned_at,409,'Un billet déjà utilisé ne peut plus être annulé.');}else requireValue(actor,403,'Accès refusé.');
+ if(token){requireValue(ticket.token===token,403,'Lien invalide.');requireValue(now()<ticket.cancel_until,409,'Le délai d’annulation est dépassé.');requireValue(!ticket.scanned_at,409,'Un billet déjà utilisé ne peut plus être annulé.');}
+ else{requireValue(actor,403,'Accès refusé.');requireValue(allowUsed||!ticket.scanned_at,409,'Un billet déjà utilisé ne peut plus être remboursé sans dérogation administrateur.');}
  const amount=ticket.unit_price;
  // Buyer cancellation and scanning compete on the same conditional write.
  // Read the deadline against SQL time at the write, rather than an earlier JS time.
@@ -218,11 +321,11 @@ export async function cancelTicket(ticketId:string,token:string|undefined,actor:
  throw new HttpError(409,'Le statut du billet a changé. Actualisez votre commande.');
  }
  }
- if(out[0].meta.changes)await audit(actor?.email||ticket.email,'cancel_ticket',ticketId,ticket.collective_id,{amount});await maintenance();return {ok:true};
+ if(out[0].meta.changes)await audit(actor?.email||ticket.email,'cancel_ticket',ticketId,ticket.collective_id,{amount,allowUsed});await maintenance();return {ok:true};
 }
 export async function scanner(request:Request,token:string){
- const link=await one('SELECT s.*,e.name,e.timezone,e.starts_at FROM scanner_links s JOIN events e ON e.id=s.event_id WHERE token=?',token);
- requireValue(link&&link.valid_from<=now()&&link.valid_until>now(),403,'Ce lien de contrôle est invalide ou hors de sa période de validité.');return link;
+ const link=await one('SELECT s.*,e.name,e.timezone,e.starts_at FROM scanner_links s JOIN events e ON e.id=s.event_id WHERE s.token=?',token);
+ requireValue(link&&!link.revoked_at&&link.valid_from<=now()&&link.valid_until>now(),403,'Ce lien de contrôle est invalide ou hors de sa période de validité.');return link;
 }
 const sqlNow="(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
 type ScannerScope={id:string;event_id:string;timezone:string;valid_from:number;valid_until:number};
@@ -250,7 +353,7 @@ export async function prepareScanner(request:Request,token:string,deviceId:strin
  const result=await stmt(`UPDATE scanner_sessions SET ticket_ids=json_patch(ticket_ids,
  (SELECT json_group_object(additions.key,additions.value) FROM json_each(?) additions
  WHERE NOT EXISTS(SELECT 1 FROM json_each(scanner_sessions.ticket_ids) existing WHERE existing.key=additions.key)))
- WHERE id=? AND EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=scanner_sessions.link_id AND s.token=? AND s.valid_from=scanner_sessions.valid_from AND s.valid_until=scanner_sessions.valid_until AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,additions,session.id,token).run();
+ WHERE id=? AND EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=scanner_sessions.link_id AND s.token=? AND s.revoked_at IS NULL AND s.valid_from=scanner_sessions.valid_from AND s.valid_until=scanner_sessions.valid_until AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,additions,session.id,token).run();
  requireValue(result.meta.changes,403,'Cette préparation a expiré ou a été révoquée.');
  }
  }
@@ -259,7 +362,7 @@ export async function prepareScanner(request:Request,token:string,deviceId:strin
  syncToken=randomToken();
  session={id:uid(),link_id:link.id,device_id:deviceId,token_hash:await hash(syncToken),prepared_at:preparedAt,valid_from:link.valid_from,valid_until:link.valid_until,sync_until:link.valid_until+86400000,ticket_ids:JSON.stringify(Object.fromEntries(ticketIds.map(id=>[id,preparedAt])))};
  const result=await stmt(`INSERT INTO scanner_sessions(id,link_id,device_id,token_hash,prepared_at,valid_from,valid_until,sync_until,ticket_ids)
- SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM scanner_links WHERE id=? AND token=? AND valid_from=? AND valid_until=? AND valid_from<=${sqlNow} AND valid_until>${sqlNow})
+ SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM scanner_links WHERE id=? AND token=? AND revoked_at IS NULL AND valid_from=? AND valid_until=? AND valid_from<=${sqlNow} AND valid_until>${sqlNow})
  AND (SELECT count(*) FROM scanner_sessions WHERE link_id=? AND sync_until>${sqlNow})<64`,session.id,session.link_id,session.device_id,session.token_hash,session.prepared_at,session.valid_from,session.valid_until,session.sync_until,session.ticket_ids,link.id,token,link.valid_from,link.valid_until,link.id).run();
  if(!result.meta.changes){await scanner(request,token);throw new HttpError(429,'La limite de 64 préparations actives est atteinte pour ce lien. Réutilisez la préparation de ce téléphone.');}
  }
@@ -268,7 +371,7 @@ export async function prepareScanner(request:Request,token:string,deviceId:strin
  return {...manifest,syncToken,deviceId,preparedAt:session.prepared_at,syncUntil:session.sync_until};
 }
 async function syncSession(token:string,deviceId:string,syncToken:string){
- const session:ScannerSession & {event_id:string;timezone:string;link_from:number;link_until:number}=await one('SELECT ss.*,s.event_id,s.valid_from link_from,s.valid_until link_until,e.timezone FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id JOIN events e ON e.id=s.event_id WHERE ss.token_hash=? AND ss.device_id=? AND s.token=?',await hash(syncToken),deviceId,token);
+ const session:ScannerSession & {event_id:string;timezone:string;link_from:number;link_until:number}=await one('SELECT ss.*,s.event_id,s.valid_from link_from,s.valid_until link_until,e.timezone FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id JOIN events e ON e.id=s.event_id WHERE ss.token_hash=? AND ss.device_id=? AND s.token=? AND s.revoked_at IS NULL',await hash(syncToken),deviceId,token);
  requireValue(session&&session.sync_until>now()&&session.link_from===session.valid_from&&session.link_until===session.valid_until,403,'Cette autorisation de synchronisation est invalide, révoquée ou expirée.');
  return session;
 }
@@ -282,9 +385,9 @@ async function consumeTicket(link:ScannerScope,code:string,deviceId:string,scann
  return {ok:true,type:ticket.type_name,id:ticket.id,scannedAt};
 }
 export async function scan(token:string,code:string,deviceId:string){
- const request=new Request(origin()),link=await scanner(request,token);
+ const request=new Request('https://passage.invalid'),link=await scanner(request,token);
  return consumeTicket(link,code,deviceId,now(),{
- sql:`EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=? AND s.token=? AND s.event_id=? AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,
+ sql:`EXISTS(SELECT 1 FROM scanner_links s WHERE s.id=? AND s.token=? AND s.event_id=? AND s.revoked_at IS NULL AND s.valid_from<=${sqlNow} AND s.valid_until>${sqlNow})`,
  parameters:[link.id,token,link.event_id],check:async()=>{await scanner(request,token);}
  });
 }
@@ -292,7 +395,7 @@ export async function syncScanner(token:string,deviceId:string,syncToken:string,
  const session=await syncSession(token,deviceId,syncToken),allowed=new Map<string,number>(Object.entries(JSON.parse(session.ticket_ids) as Record<string,number>)),results=[];
  const scope:ScannerScope={id:session.link_id,event_id:session.event_id,timezone:session.timezone,valid_from:session.valid_from,valid_until:session.valid_until};
  const guard:ScanGuard={
- sql:`EXISTS(SELECT 1 FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id WHERE ss.id=? AND ss.token_hash=? AND ss.device_id=? AND s.token=? AND s.event_id=? AND ss.sync_until>${sqlNow} AND s.valid_from=ss.valid_from AND s.valid_until=ss.valid_until)`,
+ sql:`EXISTS(SELECT 1 FROM scanner_sessions ss JOIN scanner_links s ON s.id=ss.link_id WHERE ss.id=? AND ss.token_hash=? AND ss.device_id=? AND s.token=? AND s.event_id=? AND s.revoked_at IS NULL AND ss.sync_until>${sqlNow} AND s.valid_from=ss.valid_from AND s.valid_until=ss.valid_until)`,
  parameters:[session.id,session.token_hash,deviceId,token,session.event_id],check:async()=>{await syncSession(token,deviceId,syncToken);}
  };
  for(const item of scans){try{
@@ -321,7 +424,7 @@ async function sendEmail(payload:any,id:string){
  const res=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+runtime.RESEND_API_KEY,'Content-Type':'application/json','Idempotency-Key':id},body:JSON.stringify({from:runtime.MAIL_FROM,...payload})});requireValue(res.ok,502,'Échec de l’envoi du message.');
 }
 export async function processJobs(limit=20){
- const pending=await rows("SELECT * FROM jobs WHERE (status='pending' AND next_at<=?) OR (status='processing' AND next_at<=?) ORDER BY CASE WHEN kind='refund' THEN 0 ELSE 1 END,created_at LIMIT ?",now(),now(),limit);
+ const pending=await rows("SELECT * FROM jobs WHERE ((status='pending' AND next_at<=?) OR (status='processing' AND next_at<=?)) AND attempts<12 ORDER BY CASE WHEN kind='refund' THEN 0 ELSE 1 END,created_at LIMIT ?",now(),now(),limit);
  for(const task of pending){
  const claim=await stmt("UPDATE jobs SET status='processing',next_at=? WHERE id=? AND ((status='pending' AND next_at<=?) OR (status='processing' AND next_at<=?))",now()+300000,task.id,now(),now()).run();if(!claim.meta.changes)continue;
  try{
@@ -341,6 +444,9 @@ export async function processJobs(limit=20){
  await database().batch([job('email',{to:order.email,subject:p.late?'Paiement reçu après expiration — remboursement':'Annulation et remboursement',text:p.late?'Les places n’étaient plus disponibles lors du paiement. Votre paiement a été remboursé.':'Votre billet a été annulé. Le remboursement de '+(p.amount/100).toFixed(2)+' € a été effectué.'},task.id+'-email')]);continue;
  }
  await stmt("UPDATE jobs SET status='done',error=NULL WHERE id=?",task.id).run();
- }catch(error){await stmt("UPDATE jobs SET status='pending',attempts=attempts+1,next_at=?,error=? WHERE id=?",now()+Math.min(3600000,30000*2**Math.min(task.attempts,7)),String(error).slice(0,300),task.id).run();}
+ }catch(error){
+ const attempts=Number(task.attempts||0)+1,status=attempts>=12?'failed':'pending';
+ await stmt('UPDATE jobs SET status=?,attempts=?,next_at=?,error=? WHERE id=?',status,attempts,now()+Math.min(3600000,30000*2**Math.min(attempts,7)),String(error).slice(0,300),task.id).run();
+ }
  }
 }

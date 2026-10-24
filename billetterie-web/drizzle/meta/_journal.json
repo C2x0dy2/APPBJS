@@ -29,6 +29,13 @@
       "when": 1791293699655,
       "tag": "0003_scanner_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792806385126,
+      "tag": "0004_security_hardening",
+      "breakpoints": true
     }
   ]
 }

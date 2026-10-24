@@ -1,7 +1,7 @@
-const CACHE='passage-scanner-shell-v1';
-self.addEventListener('message',event=>{if(event.data?.type!=='PREPARE')return;event.waitUntil((async()=>{const cache=await caches.open(CACHE);for(const value of event.data.urls||[]){const url=new URL(value,self.location.origin);if(url.origin!==self.location.origin||(!url.pathname.startsWith('/controle/')&&!/\.(js|css|woff2?)$/.test(url.pathname))||url.pathname.startsWith('/api/'))continue;try{const r=await fetch(url.href,{credentials:'same-origin'});if(r.ok)await cache.put(url.href,r);}catch{}}})());});
+const CACHE='passage-scanner-shell-v2';
+self.addEventListener('message',event=>{if(event.data?.type==='PURGE'){event.waitUntil(caches.delete(CACHE));return;}if(event.data?.type!=='PREPARE')return;event.waitUntil((async()=>{const cache=await caches.open(CACHE);for(const value of event.data.urls||[]){const url=new URL(value,self.location.origin);if(url.origin!==self.location.origin||(!url.pathname.startsWith('/controle/')&&!/\.(js|css|woff2?)$/.test(url.pathname))||url.pathname.startsWith('/api/'))continue;try{const r=await fetch(url.href,{credentials:'same-origin'});if(r.ok)await cache.put(url.href,r);}catch{}}})());});
 self.addEventListener('install',()=>self.skipWaiting());
-self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+self.addEventListener('activate',event=>event.waitUntil((async()=>{await self.clients.claim();for(const key of await caches.keys())if(key!==CACHE)await caches.delete(key);})()));
 self.addEventListener('fetch',event=>{
  const url=new URL(event.request.url);
  if(event.request.method!=='GET'||url.origin!==self.location.origin||url.pathname.startsWith('/api/'))return;

@@ -41,12 +41,22 @@ La première ouverture crée trois collectifs et cinq événements d’exemple p
 
 En démonstration privée, l’utilisateur connecté peut changer de collectif pour tester les trois espaces. En service réel, le serveur limite chaque organisateur à ses appartenances ; seule l’adresse administrateur configurée accède à tous les collectifs.
 
+## Sécurité
+
+- **Démo explicite** : en production, la démo n’est active que si `DEMO_MODE=true` (valeur exacte). Sans cette variable, l’application refuse d’accorder les droits d’administrateur de démonstration.
+- **Autorisation par session** : l’en-tête d’identité de la plateforme ne sert qu’à envoyer le code de connexion. Toutes les routes organisateur exigent ensuite la session issue du code à usage unique, stockée hachée en base, avec cookie `HttpOnly`, `SameSite=Strict`, `Secure` et préfixe `__Host-` en production.
+- **Jetons** : sessions et liens scanneurs sont hachés en base. Un lien scanneur peut être révoqué depuis le tableau de bord ; les autorisations de synchronisation restent liées au téléphone et expirent après l’événement.
+- **Clé de signature** : chiffrée au repos (AES-GCM) si `KEY_ENCRYPTION_SECRET` est configuré. Sans cette variable, la clé reste en clair dans D1 — à réserver au développement.
+- **En-têtes** : CSP, `Referrer-Policy: no-referrer`, `nosniff`, anti-clickjacking et HSTS en HTTPS sont ajoutés par le Worker à toutes les réponses, y compris les pages dynamiques.
+- **Anti-abus** : limitation de débit en base sur les écritures publiques, les connexions, les exports et les scanneurs ; réservations en attente plafonnées par adresse.
+- **Hébergement** : l’autorisation ne repose plus sur l’en-tête d’identité. Si l’application est déployée hors de la plateforme ChatGPT/Sites, un proxy d’authentification doit fournir cet en-tête ; sinon la connexion organisateur est impossible.
+
 ## Avant les ventes réelles
 
 L’application livrée est une **version de démonstration privée**, pas une billetterie déjà raccordée à des comptes bancaires. Aucun identifiant réel n’a été fourni.
 
 1. Confirmer le choix de Stripe et Resend, ou adapter les connecteurs si un autre prestataire est retenu.
-2. Configurer les secrets de production dans Sites : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, MAIL_FROM, ADMIN_EMAIL, APP_URL et JOB_SECRET. Ne jamais les ajouter au dépôt. Utiliser les clés de test Stripe pendant la recette.
+2. Configurer les secrets de production dans Sites : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, MAIL_FROM, ADMIN_EMAIL, APP_URL, JOB_SECRET et KEY_ENCRYPTION_SECRET. Ne jamais les ajouter au dépôt. Utiliser les clés de test Stripe pendant la recette.
 3. Dans les réglages, associer chaque collectif à son compte Stripe Connect et inviter les organisateurs. Stripe doit être configuré pour notifier les événements des comptes connectés vers POST /api/webhook.
 4. Créer les vrais événements et annuler les exemples. Les commandes fictives sont marquées demo=1 ; elles ne doivent pas être reprises dans la comptabilité réelle. Pour une exploitation réelle, utiliser une base de production propre, avec clés de signature et collectifs initialisés avant de désactiver la démonstration.
 5. Configurer un appel serveur **chaque minute** à POST /api/maintenance, avec Authorization: Bearer JOB_SECRET. Le Worker fournit aussi un gestionnaire scheduled pour un hébergement acceptant les déclencheurs cron. Ce déclenchement autonome n’est pas configuré par la publication Sites : il doit être vérifié avant exploitation. Les échéances sont également contrôlées avant les réservations et sur les lectures des pages ; aucun achat concurrent ne peut dépasser le stock.
@@ -114,6 +124,7 @@ npm run check
 npm run test:stock
 npm run test:cancellation-race
 npm run test:scanner-sync
+npm run test:security
 npm run test:api
 npm run test:waitlist
 npm run test:cancellation
@@ -123,7 +134,7 @@ npm run build
 
 Les commandes `test:stock`, `test:cancellation-race` et `test:scanner-sync` utilisent des bases SQLite isolées et ne modifient pas la base locale de l’application. Le test de course charge les fonctions serveur réelles et contrôle les deux ordres possibles entre scan et annulation, avec SQLite en mémoire ; aucun serveur de développement n’est nécessaire. Le test de synchronisation charge aussi les routes API et vérifie les autorisations, les expirations, les révocations, les doublons, les dates et les limites de requête.
 
-Les commandes `test:api`, `test:waitlist`, `test:cancellation` et `test:load` nécessitent le serveur de développement en démonstration, lancé dans un autre terminal. Elles créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle. `test:cancellation` vérifie les annulations par HTTP et refuse une cible hors de cet ordinateur ou une base hors démonstration.
+Les commandes `test:api`, `test:security`, `test:waitlist`, `test:cancellation` et `test:load` nécessitent le serveur de développement en démonstration, lancé dans un autre terminal. Elles créent des événements et des commandes d’essai dans la base locale ; les événements d’essai sont annulés à la fin. Ne pas les exécuter sur une billetterie réelle. `test:cancellation` vérifie les annulations par HTTP et refuse une cible hors de cet ordinateur ou une base hors démonstration.
 
 `test:scanner-browser` utilise un Edge ou Chrome déjà installé, avec un profil temporaire isolé. Le chemin peut être fourni par `SCANNER_BROWSER_PATH`. Aucun navigateur n’est téléchargé. Pour tester les fichiers compilés et le service worker, démarrez la démonstration compilée dans un terminal :
 
@@ -141,7 +152,7 @@ npm run test:scanner-browser
 
 Ce test crée puis annule son événement d’essai. Il utilise réellement IndexedDB et le service worker, recharge la page sans réseau et simule une réponse perdue après l’enregistrement du scan par le serveur. Le nouvel envoi doit reconnaître la même entrée, vider la file locale et conserver le compteur à un. L’échéance est raccourcie côté navigateur pour éviter une attente d’une journée ; les expirations serveur réelles sont vérifiées séparément par `test:scanner-sync`. La caméra sur les téléphones physiques reste à tester.
 
-Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. La troisième ajoute les contrôles atomiques de liste d’attente, notamment lors de l’inscription et d’une réduction de capacité. La quatrième conserve les autorisations de synchronisation hors ligne ; elles sont supprimées par la maintenance après leur échéance. La préparation accepte jusqu’à 20 000 billets et 64 autorisations actives par lien ; les actualisations réutilisent celle du téléphone. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
+Les migrations Drizzle sont dans drizzle/. La deuxième migration ajoute les garanties transactionnelles de stock, de paiement et de billets. La troisième ajoute les contrôles atomiques de liste d’attente, notamment lors de l’inscription et d’une réduction de capacité. La quatrième conserve les autorisations de synchronisation hors ligne ; elles sont supprimées par la maintenance après leur échéance. La préparation accepte jusqu’à 20 000 billets et 64 autorisations actives par lien ; les actualisations réutilisent celle du téléphone. La cinquième migration (`0004_security_hardening`) ajoute les limites de débit et la révocation des liens scanneurs. Les fichiers SQL sont conservés en LF pour D1. Les migrations de production appliquées sont immuables.
 
 Pour initialiser la base d’un nouveau clone ou appliquer les migrations ajoutées par l’équipe, arrêtez le serveur et exécutez :
 

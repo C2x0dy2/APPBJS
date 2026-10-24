@@ -14,6 +14,7 @@
     "test:cancellation": "node tests/cancellation.mjs",
     "test:cancellation-race": "node tests/cancellation-race.mjs",
     "test:scanner-sync": "node tests/scanner-sync.mjs",
+    "test:security": "node tests/security.mjs",
     "test:scanner-browser": "node tests/scanner-browser.mjs",
     "test:load": "node tests/load-api.mjs",
     "install:ci": "node scripts/install-ci.mjs",
