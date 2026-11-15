@@ -1,0 +1,16 @@
+{% extends "compte/base_auth.html" %}
+{% load i18n %}{% comment %}Affichée quand le jeton CSRF est périmé (voir compte.views.echec_csrf). Aucun formulaire ici.{% endcomment %}
+
+{% block title %}{% translate "Page expirée" %}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+{% block classe_auth %}auth--carte{% endblock %}
+
+{% block panneau_titre %}<h1 class="auth-titre">{% translate "Page expirée" %}</h1>{% endblock %}
+{% block carte_titre %}{% translate "Oups" %}{% endblock %}
+
+{% block carte %}
+  <div class="confirmation">
+    <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true"><circle cx="24" cy="24" r="20" fill="var(--yellow)" stroke="var(--night)" stroke-width="2.5"/><path d="M24 13v12l8 5" fill="none" stroke="var(--night)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <p class="auth-explication">{% translate "Cette page est restée ouverte trop longtemps, ou elle a été ouverte dans un autre onglet. Rien n'a été enregistré : recharge-la, puis réessaie." %}</p>
+  </div>
+  <a class="btn-principal btn-lien" href="{{ url_retour }}">{% translate "Recharger la page" %}</a>
+{% endblock %}

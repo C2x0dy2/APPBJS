@@ -7,10 +7,11 @@
 <article class="ticket-wrap">
   <div class="ticket">
     <div class="ticket-media">
-      {% if event.image %}
-        <img src="{{ event.image.url }}" alt="{{ event.titre }}" width="600" height="340" loading="lazy">
+      {# Image de l'événement, sinon illustration de sa catégorie, sinon simple bloc de couleur (rien d'inventé) #}
+      {% if event.image_principale %}
+        {% image_responsive event "image_principale" sizes="(min-width: 1024px) 340px, 80vw" %}
       {% elif event.categorie.illustration %}
-        <img src="{{ event.categorie.illustration.url }}" alt="" width="600" height="340" loading="lazy">
+        {% image_responsive event.categorie "illustration" sizes="(min-width: 1024px) 340px, 80vw" %}
       {% else %}
         <div class="ticket-fallback" {% if event.categorie.couleur %}style="--fond:{{ event.categorie.couleur }}"{% endif %} aria-hidden="true"></div>
       {% endif %}

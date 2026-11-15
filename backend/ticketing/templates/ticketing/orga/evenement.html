@@ -19,6 +19,7 @@
       {% endfor %}
     </ul>
     <p class="fiche-ligne"><b>{% translate "Total encaissé" %} : {{ total_encaisse|prix:site.devise }}</b></p>
+    <p class="fiche-ligne"><a href="{% url 'orga_images' organisation.slug evenement.pk %}">{% translate "Gérer les images" %}</a></p>
     <p class="fiche-ligne"><a href="{% url 'orga_export' organisation.slug evenement.pk %}">{% translate "Exporter les participants (CSV)" %}</a></p>
   </main>
 {% endblock %}

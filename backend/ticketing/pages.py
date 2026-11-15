@@ -39,7 +39,7 @@ def evenement_detail(request, slug):
     maintenant = timezone.now()
     parametres = ParametresSite.charger()
     evenement = get_object_or_404(Evenement.objects.filter(publie=True), slug=slug)
-    fiche = preparer_evenements(Evenement.objects.filter(pk=evenement.pk), maintenant, parametres)[0]
+    fiche = preparer_evenements(Evenement.objects.filter(pk=evenement.pk).prefetch_related('galerie'), maintenant, parametres)[0]
     types = [{'type': t, 'prix': t.prix_a(maintenant, list(t.tarifs.all()))} for t in fiche.types_place.all()]
     return render(request, 'ticketing/evenement_detail.html', {'evenement': fiche, 'types': types})
 

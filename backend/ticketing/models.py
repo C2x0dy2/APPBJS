@@ -11,13 +11,16 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator, MaxValueValidator, MinValueValidator, RegexValidator
+from django.core.validators import (FileExtensionValidator, MaxValueValidator, MinLengthValidator, MinValueValidator,
+                                    RegexValidator)
 from django.db import models
 from django.db.models import F, Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
+
+from .images import valider_image
 
 
 def valider_fuseau(valeur):
@@ -35,6 +38,26 @@ valider_logo = FileExtensionValidator(['svg', 'png', 'jpg', 'jpeg', 'webp', 'gif
 valider_couleur = RegexValidator(r'^#[0-9a-fA-F]{6}$', _('Couleur au format #RRGGBB (ex. #5a1b9e).'))
 
 
+def exiger_alt(instance, champ_image, champ_alt):
+    """Une image doit toujours avoir un texte alternatif (accessibilité, référencement)."""
+    if getattr(instance, champ_image) and not (getattr(instance, champ_alt) or '').strip():   # espaces seuls = vide
+        raise ValidationError({champ_alt: _("Décrivez l'image en quelques mots : le texte alternatif est obligatoire.")})
+
+
+def exiger_alt_galerie(instance):
+    """Image de galerie : le texte alternatif est toujours obligatoire (et pas seulement des espaces)."""
+    if not (instance.alt or '').strip():
+        raise ValidationError({'alt': _("Décrivez l'image en quelques mots : le texte alternatif est obligatoire.")})
+
+
+# Nom d'utilisateur (le « surnom » avec lequel on se connecte) : lettres, chiffres, point, tiret, tiret bas.
+# Pas d'arobase ni d'espace : on évite qu'un nom ressemble à une adresse e-mail ou à celui de quelqu'un d'autre.
+valider_nom_utilisateur = [
+    MinLengthValidator(3, message=_("Le nom d'utilisateur doit faire au moins 3 caractères.")),
+    RegexValidator(r'^[\w.-]+$', message=_("Lettres, chiffres, point, tiret et tiret bas uniquement, sans espace.")),
+]
+
+
 def _slug_unique(modele, base, instance):
     """Slug à partir de `base`, rendu unique en ajoutant -2, -3… si besoin."""
     racine = slugify(base)[:60] or 'element'
@@ -50,29 +73,39 @@ def _slug_unique(modele, base, instance):
 class GestionnaireUtilisateurs(BaseUserManager):
     use_in_migrations = True
 
-    def _creer(self, email, password, **extra):
+    def get_by_natural_key(self, nom_utilisateur):
+        """Connexion insensible à la casse : « Anna » et « anna » désignent le même compte."""
+        return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': nom_utilisateur})
+
+    def _creer(self, nom_utilisateur, email, password, **extra):
+        if not nom_utilisateur:
+            raise ValueError(_("Le nom d'utilisateur est obligatoire."))
         if not email:
             raise ValueError(_("L'adresse e-mail est obligatoire."))
-        utilisateur = self.model(email=self.normalize_email(email).lower(), **extra)
+        utilisateur = self.model(username=self.model.normalize_username(nom_utilisateur.strip()),
+                                 email=self.normalize_email(email).lower(), **extra)
         utilisateur.set_password(password)
         utilisateur.save(using=self._db)
         return utilisateur
 
-    def create_user(self, email=None, password=None, **extra):
+    def create_user(self, username=None, email=None, password=None, **extra):
         extra.setdefault('is_staff', False)
         extra.setdefault('is_superuser', False)
-        return self._creer(email, password, **extra)
+        return self._creer(username, email, password, **extra)
 
-    def create_superuser(self, email=None, password=None, **extra):
+    def create_superuser(self, username=None, email=None, password=None, **extra):
         extra.setdefault('is_staff', True)
         extra.setdefault('is_superuser', True)
         extra.setdefault('email_verifie', True)   # le premier administrateur n'a pas de lien à cliquer
-        return self._creer(email, password, **extra)
+        return self._creer(username, email, password, **extra)
 
 
 class Utilisateur(AbstractUser):
-    """Compte utilisateur : on se connecte avec son e-mail (pas de nom d'utilisateur)."""
-    username = None
+    """Compte utilisateur : on se connecte avec son nom d'utilisateur ; l'e-mail sert à vérifier le compte et à récupérer le mot de passe."""
+    username = models.CharField(
+        _("nom d'utilisateur"), max_length=30, unique=True, validators=valider_nom_utilisateur,
+        error_messages={'unique': _("Ce nom d'utilisateur est déjà pris.")},
+        help_text=_("3 à 30 caractères : lettres, chiffres, point, tiret et tiret bas. Sans espace."))
     email = models.EmailField(_('adresse e-mail'), unique=True)
     telephone = models.CharField(_('téléphone'), max_length=30, blank=True)
     fuseau_horaire = models.CharField(_('fuseau horaire'), max_length=64, default=fuseau_par_defaut, validators=[valider_fuseau])
@@ -80,17 +113,20 @@ class Utilisateur(AbstractUser):
     accepte_newsletter = models.BooleanField(_('accepte les alertes et la newsletter'), default=False)
     cgv_acceptees_le = models.DateTimeField(_('CGV et confidentialité acceptées le'), null=True, blank=True)
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = []
+    USERNAME_FIELD = 'username'
+    REQUIRED_FIELDS = ['email']
     objects = GestionnaireUtilisateurs()
 
     class Meta:
         verbose_name = _('utilisateur')
         verbose_name_plural = _('utilisateurs')
-        constraints = [models.UniqueConstraint(Lower('email'), name='email_unique_sans_casse')]   # « A@x.fr » et « a@x.fr » = même compte
+        constraints = [
+            models.UniqueConstraint(Lower('email'), name='email_unique_sans_casse'),   # « A@x.fr » et « a@x.fr » = même adresse
+            models.UniqueConstraint(Lower('username'), name='nom_utilisateur_unique_sans_casse'),   # « Anna » et « anna » aussi
+        ]
 
     def __str__(self):
-        return self.email
+        return self.username or self.email
 
 
 class Organisation(models.Model):
@@ -233,7 +269,12 @@ class Categorie(models.Model):
     actif = models.BooleanField(_('actif'), default=True)
     couleur = models.CharField(_('couleur'), max_length=7, blank=True, validators=[valider_couleur],
                                help_text=_('Format #RRGGBB. Sert de fond aux cartes sans image.'))
-    illustration = models.ImageField(_('illustration'), upload_to='categories/', blank=True)
+    illustration = models.ImageField(_('illustration'), upload_to='categories/', blank=True, validators=[valider_image],
+                                     width_field='illustration_largeur', height_field='illustration_hauteur',
+                                     help_text=_('Affichée sur les cartes des événements de cette catégorie qui n\'ont pas d\'image.'))
+    illustration_alt = models.CharField(_("description de l'illustration"), max_length=150, blank=True)
+    illustration_largeur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    illustration_hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     class Meta:
         verbose_name = _('catégorie')
@@ -242,6 +283,9 @@ class Categorie(models.Model):
 
     def __str__(self):
         return self.nom
+
+    def clean(self):
+        exiger_alt(self, 'illustration', 'illustration_alt')
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -254,7 +298,11 @@ class Lieu(models.Model):
     adresse = models.CharField(_('adresse'), max_length=200, blank=True)
     code_postal = models.CharField(_('code postal'), max_length=10, blank=True)
     ville = models.CharField(_('ville'), max_length=80)
-    photo = models.ImageField(_('photo'), upload_to='lieux/', blank=True)
+    photo_principale = models.ImageField(_('photo principale'), upload_to='lieux/', blank=True, validators=[valider_image],
+                                         width_field='photo_principale_largeur', height_field='photo_principale_hauteur')
+    photo_principale_alt = models.CharField(_('description de la photo'), max_length=150, blank=True)
+    photo_principale_largeur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    photo_principale_hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     class Meta:
         verbose_name = _('lieu')
@@ -263,6 +311,31 @@ class Lieu(models.Model):
 
     def __str__(self):
         return f'{self.nom} ({self.ville})'
+
+    def clean(self):
+        exiger_alt(self, 'photo_principale', 'photo_principale_alt')
+
+
+class ImageLieu(models.Model):
+    """Image de la galerie d'un lieu."""
+    lieu = models.ForeignKey(Lieu, on_delete=models.CASCADE, related_name='galerie', verbose_name=_('lieu'))
+    image = models.ImageField(_('image'), upload_to='lieux/galerie/', validators=[valider_image],
+                              width_field='largeur', height_field='hauteur')
+    alt = models.CharField(_('description de l\'image'), max_length=150, help_text=_('Obligatoire.'))
+    ordre = models.PositiveSmallIntegerField(_('ordre'), default=0)
+    largeur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+
+    class Meta:
+        verbose_name = _('image du lieu')
+        verbose_name_plural = _('images du lieu')
+        ordering = ['ordre', 'pk']
+
+    def __str__(self):
+        return self.alt
+
+    def clean(self):
+        exiger_alt_galerie(self)
 
 
 class EvenementQuerySet(models.QuerySet):
@@ -279,7 +352,11 @@ class Evenement(models.Model):
     lieu = models.ForeignKey(Lieu, null=True, blank=True, on_delete=models.SET_NULL, related_name='evenements', verbose_name=_('lieu'))
     est_en_ligne = models.BooleanField(_('événement en ligne'), default=False)
     description = models.TextField(_('description'), blank=True)
-    image = models.ImageField(_('image'), upload_to='evenements/', blank=True)
+    image_principale = models.ImageField(_('image principale'), upload_to='evenements/', blank=True, validators=[valider_image],
+                                         width_field='image_principale_largeur', height_field='image_principale_hauteur')
+    image_principale_alt = models.CharField(_("description de l'image"), max_length=150, blank=True)
+    image_principale_largeur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    image_principale_hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
     debut = models.DateTimeField(_('début'), help_text=_("Saisi dans le fuseau horaire de l'administrateur, stocké en UTC."))
     fuseau_horaire = models.CharField(_('fuseau horaire du lieu'), max_length=64, default=fuseau_par_defaut, validators=[valider_fuseau])
     date_limite_annulation = models.DateTimeField(_("date limite d'annulation"), null=True, blank=True,
@@ -297,6 +374,9 @@ class Evenement(models.Model):
     def __str__(self):
         return self.titre
 
+    def clean(self):
+        exiger_alt(self, 'image_principale', 'image_principale_alt')
+
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = _slug_unique(Evenement, self.titre, self)
@@ -312,6 +392,28 @@ class Evenement(models.Model):
         if self.date_limite_annulation:
             return self.date_limite_annulation
         return self.debut - timedelta(hours=ParametresSite.charger().delai_annulation_defaut_heures)
+
+
+class ImageEvenement(models.Model):
+    """Image de la galerie d'un événement (en plus de l'image principale)."""
+    evenement = models.ForeignKey(Evenement, on_delete=models.CASCADE, related_name='galerie', verbose_name=_('événement'))
+    image = models.ImageField(_('image'), upload_to='evenements/galerie/', validators=[valider_image],
+                              width_field='largeur', height_field='hauteur')
+    alt = models.CharField(_("description de l'image"), max_length=150, help_text=_('Obligatoire.'))
+    ordre = models.PositiveSmallIntegerField(_('ordre'), default=0)
+    largeur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
+
+    class Meta:
+        verbose_name = _("image de l'événement")
+        verbose_name_plural = _("images de l'événement")
+        ordering = ['ordre', 'pk']
+
+    def __str__(self):
+        return self.alt
+
+    def clean(self):
+        exiger_alt_galerie(self)
 
 
 class TypePlace(models.Model):

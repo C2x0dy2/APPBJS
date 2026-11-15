@@ -10,4 +10,5 @@
   {% elif autofocus %}{% champ champ data_autofocus="1" %}
   {% else %}{% champ champ %}{% endif %}
   {% include "compte/_erreurs.html" with champ=champ %}
+  {% if champ.help_text %}<p class="champ-aide" id="{{ champ.auto_id }}-aide">{{ champ.help_text }}</p>{% endif %}
 </div>

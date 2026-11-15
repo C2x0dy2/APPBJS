@@ -36,8 +36,7 @@
     {% csrf_token %}
     <input type="hidden" name="next" value="{{ next }}">
 
-    {% translate "Adresse e-mail invalide" as message_email %}
-    {% include "compte/_champ.html" with champ=form.username valider_email=True autofocus=True message_email=message_email %}
+    {% include "compte/_champ.html" with champ=form.username autofocus=True %}
     {% include "compte/_mdp.html" with champ=form.password %}
 
     <div class="options">

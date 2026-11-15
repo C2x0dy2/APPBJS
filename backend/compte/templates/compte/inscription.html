@@ -22,9 +22,12 @@
     {% csrf_token %}
     <input type="hidden" name="next" value="{{ next }}">
 
+    {# Le nom d'utilisateur est l'identifiant de connexion #}
+    {% include "compte/_champ.html" with champ=form.username autofocus=True %}
+
     {# Prénom et nom : côte à côte sur ordinateur, empilés sur téléphone #}
     <div class="deux-champs">
-      {% include "compte/_champ.html" with champ=form.first_name autofocus=True %}
+      {% include "compte/_champ.html" with champ=form.first_name %}
       {% include "compte/_champ.html" with champ=form.last_name %}
     </div>
 

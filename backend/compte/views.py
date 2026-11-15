@@ -47,8 +47,8 @@ def adresse_suivante(request):
 
 
 def message_bienvenue(request, utilisateur):
-    prenom = utilisateur.first_name
-    messages.success(request, _('Bienvenue, %(prenom)s !') % {'prenom': prenom} if prenom else _('Bienvenue !'))
+    nom = utilisateur.first_name or utilisateur.username   # le prénom s'il est connu, sinon le nom d'utilisateur
+    messages.success(request, _('Bienvenue, %(prenom)s !') % {'prenom': nom})
 
 
 class ContexteParametres:
@@ -73,8 +73,8 @@ class VueConnexion(ContexteParametres, LoginView):
         return contexte
 
     def post(self, request, *args, **kwargs):
-        email = limitation.normaliser_email(request.POST.get('username'))
-        minutes = limitation.minutes_restantes(request, email)
+        identifiant = limitation.normaliser_identifiant(request.POST.get('username'))
+        minutes = limitation.minutes_restantes(request, identifiant)
         if minutes:
             # Trop d'échecs : on n'essaie même pas d'authentifier, même si le mot de passe est bon.
             reponse = self.render_to_response(self.get_context_data(form=self.get_form(), bloque_minutes=minutes))
@@ -83,12 +83,12 @@ class VueConnexion(ContexteParametres, LoginView):
         return super().post(request, *args, **kwargs)
 
     def form_invalid(self, form):
-        limitation.enregistrer_echec(self.request, limitation.normaliser_email(self.request.POST.get('username')))
+        limitation.enregistrer_echec(self.request, limitation.normaliser_identifiant(self.request.POST.get('username')))
         return super().form_invalid(form)
 
     def form_valid(self, form):
         reponse = super().form_valid(form)   # connecte l'utilisateur
-        limitation.reinitialiser(self.request, form.cleaned_data['username'])
+        limitation.reinitialiser(self.request, limitation.normaliser_identifiant(form.cleaned_data['username']))
         if not form.cleaned_data.get('remember_me'):
             self.request.session.set_expiry(0)   # la session s'arrête à la fermeture du navigateur
         message_bienvenue(self.request, form.get_user())
@@ -191,3 +191,21 @@ class VueMdpTermine(ContexteParametres, PasswordResetCompleteView):
 def mes_billets(request):
     """Page provisoire : les billets de l'utilisateur seront listés à l'étape « Espace acheteur »."""
     return render(request, 'compte/mes_billets.html')
+
+
+# ====================================================================================== jeton CSRF périmé
+def echec_csrf(request, reason=''):
+    """Appelée par Django quand la vérification CSRF échoue (jeton absent, périmé ou différent du cookie).
+
+    Cas le plus fréquent : une page de formulaire restée ouverte, ou ouverte dans deux onglets (la connexion dans l'un
+    change le jeton de l'autre). On affiche donc un message humain avec un bouton pour recharger le formulaire.
+    Si la personne est en réalité DÉJÀ connectée, on la renvoie directement vers son compte."""
+    try:
+        nom_vue = resolve(request.path).view_name
+    except Resolver404:
+        nom_vue = ''
+    if request.user.is_authenticated and nom_vue in ('compte:connexion', 'compte:inscription'):
+        return redirect(adresse_suivante(request) or settings.LOGIN_REDIRECT_URL)
+    pages_a_recharger = {'compte:connexion', 'compte:inscription', 'compte:mdp_oublie'}
+    retour = reverse(nom_vue) if nom_vue in pages_a_recharger else reverse('accueil')
+    return render(request, 'compte/echec_csrf.html', {'url_retour': retour, 'site': ParametresSite.charger()}, status=403)

@@ -9,7 +9,7 @@ from .models import Categorie, Evenement, Lieu, ParametresSite
 
 def _version_assets():
     """Date de la dernière modification des CSS/JS : change leur adresse pour forcer le rechargement."""
-    fichiers = ['css/variables.css', 'css/home.css', 'css/effects.css', 'css/auth.css', 'js/effects.js', 'js/auth.js']
+    fichiers = ['css/variables.css', 'css/home.css', 'css/effects.css', 'css/auth.css', 'css/orga.css', 'js/effects.js', 'js/auth.js', 'js/orga.js']
     try:
         return int(max(os.path.getmtime(settings.BASE_DIR / 'assets' / f) for f in fichiers))
     except OSError:

@@ -1,10 +1,10 @@
-{% load i18n tz %}{% comment %}Rappel de l'événement en cours de réservation (lu depuis la base). Paramètres : evenement, consigne.{% endcomment %}
+{% load i18n tz billetterie %}{% comment %}Rappel de l'événement en cours de réservation (lu depuis la base). Paramètres : evenement, consigne.{% endcomment %}
 {% if evenement %}
   <div class="encart-evenement">
-    {% if evenement.image %}
-      <img class="miniature" src="{{ evenement.image.url }}" alt="" width="64" height="64">
+    {% if evenement.image_principale %}
+      {% image_responsive evenement "image_principale" sizes="68px" classe="miniature" alt="" %}
     {% elif evenement.categorie.illustration %}
-      <img class="miniature" src="{{ evenement.categorie.illustration.url }}" alt="" width="64" height="64">
+      {% image_responsive evenement.categorie "illustration" sizes="68px" classe="miniature" alt="" %}
     {% else %}
       <span class="miniature miniature--vide" {% if evenement.categorie.couleur %}style="--fond:{{ evenement.categorie.couleur }}"{% endif %} aria-hidden="true"></span>
     {% endif %}

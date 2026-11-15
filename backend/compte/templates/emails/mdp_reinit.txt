@@ -4,6 +4,8 @@
 
 {{ protocol }}://{{ domain }}{% url 'compte:mdp_nouveau' uidb64=uid token=token %}
 
+{% blocktranslate with nom=user.get_username %}Pour rappel, ton nom d'utilisateur est : {{ nom }}{% endblocktranslate %}
+
 {% translate "Si tu n'as rien demandé, ignore ce message : ton mot de passe ne change pas." %}
 {% if signature %}
 {{ signature }}{% endif %}

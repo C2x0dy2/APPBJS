@@ -67,6 +67,7 @@ body.auth-page { padding-bottom: 0; }
 .champ[aria-invalid="true"] { border-color: var(--red-strong); }
 .champ-erreur { display: flex; align-items: flex-start; gap: 7px; margin: 7px 0 0; color: var(--red-strong); font-size: 1rem; font-weight: 700; }
 .champ-erreur svg { flex: none; margin-top: 2px; }
+.champ-aide { margin: 7px 0 0; color: var(--muted); font-size: 1rem; line-height: 1.4; }
 .deux-champs { display: grid; gap: 0 14px; }
 
 .mdp { position: relative; }

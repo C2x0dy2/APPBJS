@@ -55,4 +55,5 @@ def lire_jeton(jeton):
 def envoyer_verification(request, utilisateur):
     lien = request.build_absolute_uri(reverse('compte:verifier_email', args=[fabriquer_jeton(utilisateur)]))
     envoyer(_('Vérifie ton adresse e-mail'), 'verification',
-            {'prenom': utilisateur.first_name, 'lien': lien, 'jours': settings.VERIFICATION_EMAIL_JOURS}, utilisateur.email)
+            {'prenom': utilisateur.first_name, 'nom_utilisateur': utilisateur.username, 'lien': lien,
+             'jours': settings.VERIFICATION_EMAIL_JOURS}, utilisateur.email)

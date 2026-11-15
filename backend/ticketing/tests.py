@@ -42,19 +42,52 @@ def signer(client, charge):
 # ======================================================================================
 @HACHAGE_RAPIDE
 class UtilisateurTests(TestCase):
-    def test_connexion_par_email_sans_nom_utilisateur(self):
-        creer_utilisateur('Ana@Test.fr')
-        self.assertEqual(get_user_model().objects.get().email, 'Ana@test.fr'.lower().replace('ana', 'ana'))
-        self.assertIsNotNone(authenticate(email='ana@test.fr', password='motdepasse-test-123'))
-        self.assertIsNone(authenticate(email='ana@test.fr', password='mauvais'))
+    def test_connexion_par_nom_utilisateur_sans_tenir_compte_de_la_casse(self):
+        creer_utilisateur('ana@test.fr', nom_utilisateur='Ana_B')
+        for saisie in ['Ana_B', 'ana_b', 'ANA_B']:
+            with self.subTest(saisie=saisie):
+                self.assertIsNotNone(authenticate(username=saisie, password='motdepasse-test-123'))
+        self.assertIsNone(authenticate(username='Ana_B', password='mauvais'))
+
+    def test_l_email_ne_sert_plus_d_identifiant(self):
+        creer_utilisateur('ana@test.fr', nom_utilisateur='ana_b')
+        self.assertIsNone(authenticate(username='ana@test.fr', password='motdepasse-test-123'))
+
+    def test_nom_utilisateur_unique_sans_tenir_compte_de_la_casse(self):
+        creer_utilisateur('un@test.fr', nom_utilisateur='Fosse_Fan')
+        with self.assertRaises(IntegrityError):
+            creer_utilisateur('deux@test.fr', nom_utilisateur='fosse_fan')
+
+    def test_nom_utilisateur_et_email_obligatoires(self):
+        with self.assertRaises(ValueError):
+            get_user_model().objects.create_user(username='', email='a@test.fr', password='x' * 12)
+        with self.assertRaises(ValueError):
+            get_user_model().objects.create_user(username='anna', email='', password='x' * 12)
+
+    def test_validation_du_nom_d_utilisateur(self):
+        from django.core.exceptions import ValidationError
+        for refuse in ['ab', 'avec espace', 'arobase@ici', 'plus+signe', 'x' * 31]:
+            with self.subTest(nom=refuse):
+                utilisateur = get_user_model()(username=refuse, email='v@test.fr')
+                with self.assertRaises(ValidationError) as contexte:
+                    utilisateur.full_clean(exclude=['password'])
+                self.assertIn('username', contexte.exception.message_dict)
+        for i, accepte in enumerate(['Anna_92', 'anna.b', 'jean-luc', 'Éloïse']):
+            with self.subTest(nom=accepte):
+                get_user_model()(username=accepte, email=f'v{i}@test.fr').full_clean(exclude=['password'])
 
     def test_email_unique(self):
         creer_utilisateur('ana@test.fr')
         with self.assertRaises(IntegrityError):
-            creer_utilisateur('ana@test.fr')
+            creer_utilisateur('ana@test.fr', nom_utilisateur='autre_nom')
+
+    def test_email_unique_sans_tenir_compte_de_la_casse(self):
+        creer_utilisateur('ana@test.fr')
+        with self.assertRaises(IntegrityError):
+            creer_utilisateur('ANA@test.fr', nom_utilisateur='autre_nom')
 
     def test_fuseau_par_defaut_et_superuser(self):
-        u = get_user_model().objects.create_superuser(email='chef@test.fr', password='motdepasse-test-123')
+        u = get_user_model().objects.create_superuser(username='chef', email='chef@test.fr', password='motdepasse-test-123')
         self.assertEqual(u.fuseau_horaire, 'Europe/Paris')
         self.assertTrue(u.is_staff and u.is_superuser)
 
@@ -264,7 +297,7 @@ class AccesOrganisationTests(TestCase):
         self.controleur_a = creer_utilisateur('controleur-a@test.fr')
         self.admin_b = creer_utilisateur('admin-b@test.fr')
         self.sans_organisation = creer_utilisateur('seul@test.fr')
-        self.superuser = get_user_model().objects.create_superuser(email='root@test.fr', password='x' * 12)
+        self.superuser = get_user_model().objects.create_superuser(username='root', email='root@test.fr', password='x' * 12)
         Membre.objects.create(utilisateur=self.admin_a, organisation=self.orga_a, role=Membre.ADMIN)
         Membre.objects.create(utilisateur=self.gestionnaire_a, organisation=self.orga_a, role=Membre.GESTIONNAIRE)
         Membre.objects.create(utilisateur=self.controleur_a, organisation=self.orga_a, role=Membre.CONTROLEUR)
@@ -535,7 +568,7 @@ class NavigationTests(TestCase):
 
     def test_espace_organisateur_seulement_pour_le_personnel(self):
         self.assertNotContains(self.client.get(reverse('accueil')), 'Espace organisateur')
-        self.client.force_login(get_user_model().objects.create_user(email='staff@test.fr', password='x' * 12, is_staff=True))
+        self.client.force_login(get_user_model().objects.create_user(username='staff', email='staff@test.fr', password='x' * 12, is_staff=True))
         self.assertContains(self.client.get(reverse('accueil')), 'Espace organisateur')
 
 
@@ -681,7 +714,7 @@ class RechercheTests(TestCase):
 @HACHAGE_RAPIDE
 class AdminTests(TestCase):
     def setUp(self):
-        self.client.force_login(get_user_model().objects.create_superuser(email='chef@test.fr', password='x' * 12))
+        self.client.force_login(get_user_model().objects.create_superuser(username='chef', email='chef@test.fr', password='x' * 12))
 
     def test_toutes_les_listes_de_l_admin_s_affichent(self):
         for modele in admin.site._registry:
@@ -702,6 +735,7 @@ class AdminTests(TestCase):
             'debut_1': '20:00:00', 'fuseau_horaire': 'Europe/Paris', 'publie': 'on',
             'types_place-TOTAL_FORMS': '2', 'types_place-INITIAL_FORMS': '0', 'types_place-MIN_NUM_FORMS': '0',
             'types_place-MAX_NUM_FORMS': '1000',
+            'galerie-TOTAL_FORMS': '0', 'galerie-INITIAL_FORMS': '0', 'galerie-MIN_NUM_FORMS': '0', 'galerie-MAX_NUM_FORMS': '1000',   # galerie vide
             'types_place-0-nom': 'Fosse', 'types_place-0-capacite': '100', 'types_place-0-prix_base_centimes': '2500',
             'types_place-1-nom': 'Balcon', 'types_place-1-capacite': '50', 'types_place-1-prix_base_centimes': '1800',
         })

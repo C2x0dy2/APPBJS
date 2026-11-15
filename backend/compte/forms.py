@@ -8,7 +8,9 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from . import emails
-from .limitation import normaliser_email
+from ticketing.models import valider_nom_utilisateur
+
+from .limitation import normaliser_identifiant
 
 
 def longueur_minimale_mdp():
@@ -26,23 +28,28 @@ def champ_email():
 
 # ====================================================================================== connexion
 class FormulaireConnexion(AuthenticationForm):
-    """Connexion par e-mail. Le message d'erreur est identique que l'e-mail existe ou non."""
-    username = champ_email()
+    """Connexion par nom d'utilisateur. Le message d'erreur est identique que le compte existe ou non."""
+    username = forms.CharField(label=_("Nom d'utilisateur"), widget=forms.TextInput(attrs={
+        'autocomplete': 'username', 'autocapitalize': 'none', 'spellcheck': 'false'}))
     password = forms.CharField(label=_('Mot de passe'), strip=False,
                                widget=forms.PasswordInput(attrs={'autocomplete': 'current-password'}))
     remember_me = forms.BooleanField(required=False, label=_('Rester connecté'))
 
     error_messages = {
-        'invalid_login': _('E-mail ou mot de passe incorrect.'),
-        'inactive': _('E-mail ou mot de passe incorrect.'),   # même message : on ne révèle rien sur le compte
+        'invalid_login': _("Nom d'utilisateur ou mot de passe incorrect."),
+        'inactive': _("Nom d'utilisateur ou mot de passe incorrect."),   # même message : on ne révèle rien sur le compte
     }
 
     def clean_username(self):
-        return normaliser_email(self.cleaned_data['username'])
+        return self.cleaned_data['username'].strip()   # la casse n'a pas d'importance : le compte est retrouvé sans en tenir compte
 
 
 # ====================================================================================== inscription
 class FormulaireInscription(forms.Form):
+    username = forms.CharField(
+        label=_("Nom d'utilisateur"), max_length=30, validators=valider_nom_utilisateur,
+        help_text=_("C'est avec lui que tu te connecteras. 3 à 30 caractères : lettres, chiffres, point, tiret et tiret bas. Sans espace."),
+        widget=forms.TextInput(attrs={'autocomplete': 'username', 'autocapitalize': 'none', 'spellcheck': 'false'}))
     first_name = forms.CharField(label=_('Prénom'), max_length=150, widget=forms.TextInput(attrs={'autocomplete': 'given-name'}))
     last_name = forms.CharField(label=_('Nom'), max_length=150, widget=forms.TextInput(attrs={'autocomplete': 'family-name'}))
     email = champ_email()
@@ -51,7 +58,16 @@ class FormulaireInscription(forms.Form):
         required=True, error_messages={'required': _("Tu dois accepter les CGV et la politique de confidentialité pour créer un compte.")})
     accepte_newsletter = forms.BooleanField(required=False)   # jamais cochée par défaut
 
-    error_messages = {'email_existe': _('Un compte existe déjà avec cette adresse e-mail.')}
+    error_messages = {
+        'email_existe': _('Un compte existe déjà avec cette adresse e-mail.'),
+        'nom_pris': _("Ce nom d'utilisateur est déjà pris."),
+    }
+
+    def clean_username(self):
+        nom = self.cleaned_data['username'].strip()
+        if get_user_model().objects.filter(username__iexact=nom).exists():   # « Anna » et « anna » = même nom
+            raise ValidationError(self.error_messages['nom_pris'], code='nom_pris')
+        return nom
 
     def clean_first_name(self):
         return self.cleaned_data['first_name'].strip()
@@ -60,7 +76,7 @@ class FormulaireInscription(forms.Form):
         return self.cleaned_data['last_name'].strip()
 
     def clean_email(self):
-        email = normaliser_email(self.cleaned_data['email'])
+        email = normaliser_identifiant(self.cleaned_data['email'])
         if get_user_model().objects.filter(email__iexact=email).exists():   # insensible à la casse
             raise ValidationError(self.error_messages['email_existe'], code='email_existe')
         return email
@@ -70,7 +86,7 @@ class FormulaireInscription(forms.Form):
         mot_de_passe = donnees.get('password')
         if mot_de_passe:
             # Les vrais critères sont ceux de AUTH_PASSWORD_VALIDATORS (longueur, mots de passe courants, ressemblance…)
-            utilisateur = get_user_model()(email=donnees.get('email', ''), first_name=donnees.get('first_name', ''),
+            utilisateur = get_user_model()(username=donnees.get('username', ''), email=donnees.get('email', ''), first_name=donnees.get('first_name', ''),
                                            last_name=donnees.get('last_name', ''))
             try:
                 password_validation.validate_password(mot_de_passe, utilisateur)
@@ -81,7 +97,8 @@ class FormulaireInscription(forms.Form):
     def save(self):
         donnees = self.cleaned_data
         return get_user_model().objects.create_user(
-            email=donnees['email'], password=donnees['password'], first_name=donnees['first_name'], last_name=donnees['last_name'],
+            username=donnees['username'], email=donnees['email'], password=donnees['password'],
+            first_name=donnees['first_name'], last_name=donnees['last_name'],
             accepte_newsletter=donnees['accepte_newsletter'], cgv_acceptees_le=timezone.now())
 
 

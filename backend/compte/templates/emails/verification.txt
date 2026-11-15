@@ -4,7 +4,8 @@
 
 {{ lien }}
 
-{% blocktranslate count n=jours %}Ce lien est valable {{ n }} jour.{% plural %}Ce lien est valable {{ n }} jours.{% endblocktranslate %}
+{% if nom_utilisateur %}{% blocktranslate %}Ton nom d'utilisateur : {{ nom_utilisateur }}{% endblocktranslate %}
+{% endif %}{% blocktranslate count n=jours %}Ce lien est valable {{ n }} jour.{% plural %}Ce lien est valable {{ n }} jours.{% endblocktranslate %}
 {% translate "Si tu n'as pas créé de compte, tu peux ignorer ce message." %}
 {% if signature %}
 {{ signature }}{% endif %}

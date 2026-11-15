@@ -4,6 +4,7 @@ Configuration du projet.
 Les secrets et les réglages d'environnement viennent du fichier .env (non versionné, voir
 .env.example). Les textes, coordonnées et réglages du site sont dans l'admin (« Paramètres du site »).
 """
+import json
 import os
 from pathlib import Path
 
@@ -115,8 +116,37 @@ USE_TZ = True
 # --- Fichiers statiques (CSS, JS, polices) et médias (images téléversées dans l'admin) ---
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'assets']
-MEDIA_URL = 'media/'
+MEDIA_URL = env('MEDIA_URL', 'media/')
 MEDIA_ROOT = BASE_DIR / env('MEDIA_DIR', 'media')
+
+
+def _options_stockage():
+    """Options du stockage des images (JSON dans MEDIA_STORAGE_OPTIONS), pour un stockage externe en production."""
+    brut = env('MEDIA_STORAGE_OPTIONS', '{}')
+    try:
+        options = json.loads(brut)
+    except ValueError:
+        raise ImproperlyConfigured('MEDIA_STORAGE_OPTIONS doit contenir du JSON valide.')
+    return options
+
+
+# Stockage des images téléversées. En développement : fichiers locaux (MEDIA_ROOT). En production, on peut
+# viser un stockage externe sans changer le code, par exemple django-storages (à installer) :
+#   MEDIA_STORAGE_BACKEND=storages.backends.s3.S3Storage
+#   MEDIA_STORAGE_OPTIONS={"bucket_name": "...", "region_name": "...", "default_acl": "public-read"}
+STORAGES = {
+    'default': {'BACKEND': env('MEDIA_STORAGE_BACKEND', 'django.core.files.storage.FileSystemStorage'), 'OPTIONS': _options_stockage()},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
+
+# --- Images : limites à l'upload et versions générées (voir ticketing/images.py) ---
+IMAGE_FORMATS_AUTORISES = ('JPEG', 'PNG', 'WEBP')
+IMAGE_TAILLE_MAX_MO = env_int('IMAGE_TAILLE_MAX_MO', 5)         # poids maximum d'une image
+IMAGE_LARGEUR_MIN = env_int('IMAGE_LARGEUR_MIN', 600)           # dimensions minimales, en pixels
+IMAGE_HAUTEUR_MIN = env_int('IMAGE_HAUTEUR_MIN', 400)
+IMAGE_PIXELS_MAX = env_int('IMAGE_PIXELS_MAX', 40_000_000)      # protège le serveur des images gigantesques
+IMAGE_LARGEURS = {'miniature': 320, 'moyenne': 800, 'grande': 1600}   # largeurs des versions WebP
+IMAGE_QUALITE_WEBP = env_int('IMAGE_QUALITE_WEBP', 82)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -150,6 +180,16 @@ SESSION_COOKIE_AGE = env_int('SESSION_DUREE_JOURS', 30) * 24 * 3600        # dur
 SESSION_COOKIE_SECURE = not DEBUG        # cookies de session et CSRF en HTTPS seulement en production
 CSRF_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
+
+# Les cookies ne sont PAS séparés par numéro de port : deux projets Django lancés en local sur 127.0.0.1 (même sur des
+# ports différents) se partagent un cookie « csrftoken » et un cookie « sessionid », et s'écrasent l'un l'autre
+# (erreur 403 CSRF, déconnexions surprises). On donne donc à ce projet des noms de cookie à lui.
+_PREFIXE_COOKIE = env('COOKIE_PREFIXE', 'billetterie')
+CSRF_COOKIE_NAME = f'{_PREFIXE_COOKIE}_csrftoken'
+SESSION_COOKIE_NAME = f'{_PREFIXE_COOKIE}_sessionid'
+
+# Jeton CSRF périmé (page restée ouverte, autre onglet…) : une page claire plutôt que l'erreur brute de Django.
+CSRF_FAILURE_VIEW = 'compte.views.echec_csrf'
 
 # Le compteur de tentatives utilise le cache. LocMem suffit pour un seul processus (développement) ;
 # en production avec plusieurs processus, utilisez un cache partagé (Redis, base de données…).

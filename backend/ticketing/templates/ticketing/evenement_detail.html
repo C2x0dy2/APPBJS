@@ -5,8 +5,11 @@
 
 {% block content %}
   <main class="fiche">
-    {% if evenement.image %}
-      <img class="fiche-image" src="{{ evenement.image.url }}" alt="{{ evenement.titre }}" width="1200" height="675">
+    {# Image principale : visible dès l'arrivée, donc chargée en priorité (pas de chargement différé) #}
+    {% if evenement.image_principale %}
+      {% image_responsive evenement "image_principale" sizes="(min-width: 900px) 900px, 100vw" classe="fiche-image" priorite=True %}
+    {% elif evenement.categorie.illustration %}
+      {% image_responsive evenement.categorie "illustration" sizes="(min-width: 900px) 900px, 100vw" classe="fiche-image" priorite=True %}
     {% endif %}
 
     <div class="fiche-corps">
@@ -28,6 +31,17 @@
       {% endif %}
 
       {% if evenement.description %}<div class="fiche-description">{{ evenement.description|linebreaks }}</div>{% endif %}
+
+      {# Galerie : seulement s'il y a des images ; chargement différé #}
+      {% with galerie=evenement.galerie.all %}
+        {% if galerie %}
+          <ul class="fiche-galerie">
+            {% for photo in galerie %}
+              <li>{% image_responsive photo "image" sizes="(min-width: 640px) 280px, 46vw" %}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endwith %}
 
       {% if types %}
         <h2 class="fiche-sous-titre">{% translate "Places" %}</h2>

@@ -27,8 +27,8 @@ class ConnexionTests(TestCase):
         self.utilisateur = creer_utilisateur('anna@test.fr', MOT_DE_PASSE, first_name='Anna')
         self.url = reverse('compte:connexion')
 
-    def connexion(self, email='anna@test.fr', mot_de_passe=MOT_DE_PASSE, **extra):
-        return self.client.post(self.url, {'username': email, 'password': mot_de_passe, **extra})
+    def connexion(self, nom_utilisateur='anna', mot_de_passe=MOT_DE_PASSE, **extra):
+        return self.client.post(self.url, {'username': nom_utilisateur, 'password': mot_de_passe, **extra})
 
     # -- identifiants
     def test_connexion_reussie_redirige_vers_mes_billets_avec_un_message_de_bienvenue(self):
@@ -39,15 +39,15 @@ class ConnexionTests(TestCase):
         self.assertEqual(self.client.get(reponse['Location']).context['user'], self.utilisateur)
 
     def test_message_de_bienvenue_sans_prenom(self):
-        creer_utilisateur('sans-prenom@test.fr', MOT_DE_PASSE)
-        reponse = self.connexion('sans-prenom@test.fr')
-        self.assertContains(self.client.get(reponse['Location']), 'Bienvenue !')
+        creer_utilisateur('sans-prenom@test.fr', MOT_DE_PASSE, nom_utilisateur='surnom_42')
+        reponse = self.connexion('surnom_42')
+        self.assertContains(self.client.get(reponse['Location']), 'Bienvenue, surnom_42 !')   # à défaut de prénom : le nom d'utilisateur
 
-    def test_mauvais_mot_de_passe_et_email_inconnu_donnent_le_meme_message(self):
+    def test_mauvais_mot_de_passe_et_nom_inconnu_donnent_le_meme_message(self):
         mauvais = self.connexion(mot_de_passe='faux')
-        inconnu = self.connexion('inconnu@test.fr')
+        inconnu = self.connexion('personne')
         self.assertEqual((mauvais.status_code, inconnu.status_code), (200, 200))
-        message = 'E-mail ou mot de passe incorrect.'
+        message = "Nom d'utilisateur ou mot de passe incorrect."
         self.assertEqual(list(mauvais.context['form'].non_field_errors()), [message])
         self.assertEqual(list(inconnu.context['form'].non_field_errors()), [message])
         self.assertNotIn('_auth_user_id', self.client.session)
@@ -55,16 +55,21 @@ class ConnexionTests(TestCase):
     def test_compte_desactive_donne_le_meme_message(self):
         get_user_model().objects.filter(pk=self.utilisateur.pk).update(is_active=False)
         reponse = self.connexion()
-        self.assertEqual(list(reponse.context['form'].non_field_errors()), ['E-mail ou mot de passe incorrect.'])
+        self.assertEqual(list(reponse.context['form'].non_field_errors()), ["Nom d'utilisateur ou mot de passe incorrect."])
 
-    def test_email_normalise_espaces_et_casse(self):
-        reponse = self.connexion('  ANNA@Test.FR ')
+    def test_nom_d_utilisateur_sans_tenir_compte_des_espaces_ni_de_la_casse(self):
+        reponse = self.connexion('  ANNA ')
         self.assertEqual(reponse.status_code, 302)
+
+    def test_l_adresse_e_mail_ne_permet_plus_de_se_connecter(self):
+        reponse = self.connexion('anna@test.fr')
+        self.assertEqual(reponse.status_code, 200)
+        self.assertNotIn('_auth_user_id', self.client.session)
 
     def test_le_mot_de_passe_n_est_jamais_reaffiche(self):
         reponse = self.connexion(mot_de_passe='un-secret-visible')
         self.assertNotContains(reponse, 'un-secret-visible')
-        self.assertContains(reponse, 'value="anna@test.fr"')     # l'e-mail, lui, est conservé
+        self.assertContains(reponse, 'value="anna"')     # le nom d'utilisateur, lui, est conservé
 
     # -- redirection (next)
     def test_redirection_vers_next_interne(self):
@@ -117,11 +122,11 @@ class ConnexionTests(TestCase):
         self.assertNotIn('_auth_user_id', self.client.session)
 
     @override_settings(CONNEXION_TENTATIVES_MAX=3)
-    def test_le_blocage_est_propre_a_chaque_email(self):
+    def test_le_blocage_est_propre_a_chaque_nom_d_utilisateur(self):
         for _ in range(3):
             self.connexion(mot_de_passe='faux')
         autre = creer_utilisateur('autre@test.fr', MOT_DE_PASSE)
-        self.assertEqual(self.connexion('autre@test.fr').status_code, 302)
+        self.assertEqual(self.connexion('autre').status_code, 302)
         self.client.logout()
         self.assertEqual(self.connexion().status_code, 429)
 
@@ -211,17 +216,18 @@ class PageConnexionContenuTests(TestCase):
 
     def test_accessibilite_du_formulaire(self):
         reponse = self.client.get(self.url)
-        self.assertContains(reponse, 'type="email"')
-        self.assertContains(reponse, 'autocomplete="email"')
-        self.assertContains(reponse, 'inputmode="email"')
+        self.assertContains(reponse, 'autocomplete="username"')
+        self.assertNotContains(reponse, 'type="email"')          # ce n'est plus une adresse e-mail
+        self.assertContains(reponse, 'autocapitalize="none"')
         self.assertContains(reponse, 'autocomplete="current-password"')
         self.assertContains(reponse, 'data-oeil=')
         self.assertContains(reponse, 'aria-pressed="false"')
         self.assertContains(reponse, 'csrfmiddlewaretoken')
         self.assertContains(reponse, 'for="id_username"')
+        self.assertContains(reponse, 'Nom d&#x27;utilisateur')
 
     def test_erreur_de_champ_relie_au_message(self):
-        reponse = self.client.post(self.url, {'username': 'pas-un-mail', 'password': 'x'})
+        reponse = self.client.post(self.url, {'username': '', 'password': 'x'})      # nom d'utilisateur oublié
         self.assertContains(reponse, 'aria-invalid="true"')
         self.assertContains(reponse, 'aria-describedby="id_username-erreur"')
         self.assertContains(reponse, 'id="id_username-erreur"')
@@ -240,7 +246,7 @@ class NavigationCompteTests(TestCase):
 # ======================================================================================
 # Inscription
 # ======================================================================================
-DONNEES_INSCRIPTION = {'first_name': 'Léa', 'last_name': 'Martin', 'email': 'lea@test.fr', 'password': 'Un-mot-de-passe-solide-42',
+DONNEES_INSCRIPTION = {'username': 'lea_m', 'first_name': 'Léa', 'last_name': 'Martin', 'email': 'lea@test.fr', 'password': 'Un-mot-de-passe-solide-42',
                        'accepte_cgv': 'on'}
 
 
@@ -259,6 +265,7 @@ class InscriptionTests(TestCase):
         self.assertRedirects(reponse, reverse('compte:mes_billets'), fetch_redirect_response=False)
         utilisateur = get_user_model().objects.get(email='lea@test.fr')
         self.assertEqual(self.client.session['_auth_user_id'], str(utilisateur.pk))
+        self.assertEqual(utilisateur.username, 'lea_m')
         self.assertFalse(utilisateur.email_verifie)
         self.assertIsNotNone(utilisateur.cgv_acceptees_le)
         self.assertFalse(utilisateur.accepte_newsletter)          # jamais cochée par défaut
@@ -300,6 +307,53 @@ class InscriptionTests(TestCase):
                 self.assertTrue(reponse.context['form'].errors.get('password'))
         self.assertFalse(get_user_model().objects.exists())
 
+    # -- nom d'utilisateur
+    def test_le_nom_d_utilisateur_est_demande_en_premier_avec_son_aide(self):
+        page = self.client.get(self.url).content.decode()
+        self.assertLess(page.index('name="username"'), page.index('name="first_name"'))
+        self.assertIn('C&#x27;est avec lui que tu te connecteras', page)   # l'apostrophe est échappée en HTML
+        self.assertIn('aria-describedby="id_username-aide"', page)
+
+    def test_on_se_connecte_ensuite_avec_ce_nom_d_utilisateur(self):
+        self.inscrire()
+        self.client.logout()
+        self.assertEqual(self.client.post(reverse('compte:connexion'), {'username': 'LEA_M', 'password': DONNEES_INSCRIPTION['password']}).status_code, 302)
+
+    def test_nom_d_utilisateur_deja_pris_meme_avec_une_casse_differente(self):
+        creer_utilisateur('autre@test.fr', MOT_DE_PASSE, nom_utilisateur='Lea_M')
+        for saisie in ['lea_m', 'LEA_M', ' Lea_M ']:
+            with self.subTest(saisie=saisie):
+                reponse = self.inscrire(username=saisie)
+                self.assertEqual(reponse.status_code, 200)
+                self.assertContains(reponse, 'Ce nom d&#x27;utilisateur est déjà pris.')
+        self.assertEqual(get_user_model().objects.count(), 1)
+
+    def test_noms_d_utilisateur_invalides_refuses(self):
+        for mauvais, attendu in [('ab', 'au moins 3 caractères'), ('avec espace', 'sans espace'), ('lea@test', 'sans espace'),
+                                 ('x' * 31, '30')]:
+            with self.subTest(nom=mauvais):
+                reponse = self.inscrire(username=mauvais)
+                self.assertEqual(reponse.status_code, 200)
+                self.assertIn('username', reponse.context['form'].errors)
+        self.assertFalse(get_user_model().objects.exists())
+
+    def test_nom_d_utilisateur_obligatoire(self):
+        reponse = self.inscrire(username='')
+        self.assertIn('username', reponse.context['form'].errors)
+
+    def test_le_message_de_bienvenue_utilise_le_prenom(self):
+        reponse = self.inscrire()
+        self.assertContains(self.client.get(reponse['Location']), 'Bienvenue, Léa !')
+
+    def test_le_mot_de_passe_ne_peut_pas_ressembler_au_nom_d_utilisateur(self):
+        reponse = self.inscrire(username='soleil_couchant', password='soleil_couchant1')
+        self.assertTrue(reponse.context['form'].errors.get('password'))
+
+    def test_l_e_mail_de_verification_rappelle_le_nom_d_utilisateur(self):
+        self.inscrire()
+        self.assertIn("Ton nom d'utilisateur : lea_m", mail.outbox[0].body)
+        self.assertIn('<b>lea_m</b>', mail.outbox[0].alternatives[0][0])
+
     def test_champs_obligatoires_et_email_invalide(self):
         reponse = self.inscrire(first_name='', last_name='', email='pas-un-mail')
         for champ in ('first_name', 'last_name', 'email'):
@@ -307,6 +361,7 @@ class InscriptionTests(TestCase):
 
     def test_valeurs_conservees_sauf_le_mot_de_passe(self):
         reponse = self.inscrire(email='pas-un-mail', password='Un-mot-de-passe-solide-42')
+        self.assertContains(reponse, 'value="lea_m"')
         self.assertContains(reponse, 'value="Léa"')
         self.assertContains(reponse, 'value="Martin"')
         self.assertNotContains(reponse, 'Un-mot-de-passe-solide-42')
@@ -335,7 +390,7 @@ class InscriptionTests(TestCase):
 
     def test_accessibilite_du_formulaire(self):
         reponse = self.client.get(self.url)
-        for attendu in ['autocomplete="given-name"', 'autocomplete="family-name"', 'autocomplete="email"',
+        for attendu in ['autocomplete="username"', 'autocomplete="given-name"', 'autocomplete="family-name"', 'autocomplete="email"',
                         'autocomplete="new-password"', 'type="email"', 'data-oeil=', 'data-force-champ=', 'data-regle="longueur"']:
             self.assertContains(reponse, attendu)
         self.assertNotContains(reponse, 'confirm')       # pas de champ « confirmer le mot de passe »
@@ -481,7 +536,7 @@ class VerificationEmailTests(TestCase):
         self.assertNotContains(self.client.get(reverse('accueil')), 'bandeau-verif')
 
     def test_le_superuser_est_verifie_d_office(self):
-        self.assertTrue(get_user_model().objects.create_superuser(email='root@test.fr', password='x' * 12).email_verifie)
+        self.assertTrue(get_user_model().objects.create_superuser(username='root', email='root@test.fr', password='x' * 12).email_verifie)
 
     # -- paiement refusé tant que l'e-mail n'est pas vérifié
     def reserver(self, evenement, type_place):
@@ -535,6 +590,11 @@ class MotDePasseOublieTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)                          # un e-mail pour le compte existant seulement
         self.assertContains(self.client.get(existant['Location']), 'Si un compte existe avec cette adresse')
 
+    def test_l_e_mail_de_reinitialisation_rappelle_le_nom_d_utilisateur(self):
+        self.demander()
+        self.assertIn("ton nom d'utilisateur est : oubli", mail.outbox[0].body)
+        self.assertIn('<b>oubli</b>', mail.outbox[0].alternatives[0][0])
+
     def test_contenu_de_l_e_mail_de_reinitialisation(self):
         parametres(nom_site='Mon Site', email_signature='La signature')
         self.demander()
@@ -553,8 +613,8 @@ class MotDePasseOublieTests(TestCase):
         fin = self.client.post(adresse, {'new_password1': 'Nouveau-mot-de-passe-77'})
         self.assertRedirects(fin, reverse('compte:mdp_termine'), fetch_redirect_response=False)
         self.assertContains(self.client.get(fin['Location']), 'Ton mot de passe a bien été modifié')
-        self.assertIsNone(authenticate(email='oubli@test.fr', password=MOT_DE_PASSE))
-        self.assertIsNotNone(authenticate(email='oubli@test.fr', password='Nouveau-mot-de-passe-77'))
+        self.assertIsNone(authenticate(username='oubli', password=MOT_DE_PASSE))
+        self.assertIsNotNone(authenticate(username='oubli', password='Nouveau-mot-de-passe-77'))
         self.utilisateur.refresh_from_db()
         self.assertTrue(self.utilisateur.email_verifie)                  # le lien reçu prouve que l'adresse est la bonne
 
@@ -586,9 +646,100 @@ class MotDePasseOublieTests(TestCase):
         reponse = self.client.post(suite.redirect_chain[-1][0], {'new_password1': '12345678'})
         self.assertEqual(reponse.status_code, 200)
         self.assertTrue(reponse.context['form'].errors.get('new_password1'))
-        self.assertIsNotNone(authenticate(email='oubli@test.fr', password=MOT_DE_PASSE))   # inchangé
+        self.assertIsNotNone(authenticate(username='oubli', password=MOT_DE_PASSE))   # inchangé
 
     def test_comptes_desactives_ne_recoivent_rien(self):
         get_user_model().objects.filter(pk=self.utilisateur.pk).update(is_active=False)
         self.demander()
         self.assertEqual(len(mail.outbox), 0)
+
+
+# ======================================================================================
+# CSRF : chaque formulaire du site fonctionne avec la vérification activée (comme dans un vrai navigateur)
+# ======================================================================================
+def jeton_csrf(reponse):
+    """Le jeton caché du premier formulaire de la page (celui que le navigateur renverrait)."""
+    return re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', reponse.content.decode()).group(1)
+
+
+@HACHAGE_RAPIDE
+class CsrfFormulairesTests(TestCase):
+    """Le client de test ignore le CSRF par défaut. Ici il est ACTIVÉ : on charge la page, on lit le jeton, on envoie."""
+
+    def setUp(self):
+        cache.clear()
+        from django.test import Client
+        self.navigateur = Client(enforce_csrf_checks=True)
+
+    def envoyer(self, url, donnees, page=None):
+        """Charge `page` (ou `url`), récupère le jeton, puis envoie le formulaire, comme un navigateur."""
+        jeton = jeton_csrf(self.navigateur.get(page or url))
+        return self.navigateur.post(url, {'csrfmiddlewaretoken': jeton, **donnees})
+
+    def test_connexion(self):
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        reponse = self.envoyer(reverse('compte:connexion'), {'username': 'anna', 'password': MOT_DE_PASSE})
+        self.assertEqual(reponse.status_code, 302)
+
+    def test_inscription(self):
+        reponse = self.envoyer(reverse('compte:inscription'), DONNEES_INSCRIPTION)
+        self.assertEqual(reponse.status_code, 302)
+        self.assertTrue(get_user_model().objects.filter(username='lea_m').exists())
+
+    def test_mot_de_passe_oublie(self):
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        reponse = self.envoyer(reverse('compte:mdp_oublie'), {'email': 'anna@test.fr'})
+        self.assertRedirects(reponse, reverse('compte:mdp_envoye'), fetch_redirect_response=False)
+
+    def test_deconnexion_et_renvoi_du_lien_apres_connexion(self):
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        self.envoyer(reverse('compte:connexion'), {'username': 'anna', 'password': MOT_DE_PASSE})
+        # le jeton change à la connexion : on recharge la page avant d'envoyer les formulaires suivants
+        reponse = self.envoyer(reverse('compte:renvoyer_verification'), {}, page=reverse('compte:mes_billets'))
+        self.assertEqual(reponse.status_code, 302)
+        reponse = self.envoyer(reverse('compte:deconnexion'), {}, page=reverse('compte:mes_billets'))
+        self.assertRedirects(reponse, reverse('accueil'), fetch_redirect_response=False)
+
+    def test_un_jeton_perime_donne_une_page_claire_et_non_une_erreur_brute(self):
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        url = reverse('compte:connexion')
+        reponse = self.navigateur.post(url, {'csrfmiddlewaretoken': 'jeton-perime', 'username': 'anna', 'password': MOT_DE_PASSE})
+        self.assertEqual(reponse.status_code, 403)
+        self.assertContains(reponse, 'restée ouverte trop longtemps', status_code=403)
+        self.assertContains(reponse, f'href="{url}"', status_code=403)                  # bouton pour réessayer
+        self.assertNotContains(reponse, 'CSRF token', status_code=403)
+        self.assertNotIn('_auth_user_id', self.navigateur.session)
+
+    def test_jeton_perime_apres_une_connexion_dans_un_autre_onglet(self):
+        """Onglet A et onglet B ouvrent la page de connexion ; A se connecte (le jeton change) ; B envoie son vieux formulaire."""
+        from django.test import Client
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        url = reverse('compte:connexion')
+        vieux_jeton = jeton_csrf(self.navigateur.get(url))
+        self.navigateur.post(url, {'csrfmiddlewaretoken': vieux_jeton, 'username': 'anna', 'password': MOT_DE_PASSE})
+        reponse = self.navigateur.post(url, {'csrfmiddlewaretoken': vieux_jeton, 'username': 'anna', 'password': MOT_DE_PASSE})
+        # déjà connecté : l'utilisateur est renvoyé vers son compte au lieu de voir une erreur
+        self.assertEqual(reponse.status_code, 302)
+        self.assertEqual(reponse['Location'], reverse('compte:mes_billets'))
+
+    # -- cookies propres à ce projet
+    def test_les_cookies_de_ce_projet_ont_leurs_propres_noms(self):
+        from django.conf import settings
+        self.assertNotIn(settings.CSRF_COOKIE_NAME, ('csrftoken',))
+        self.assertNotIn(settings.SESSION_COOKIE_NAME, ('sessionid',))
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        self.envoyer(reverse('compte:connexion'), {'username': 'anna', 'password': MOT_DE_PASSE})
+        self.assertIn(settings.CSRF_COOKIE_NAME, self.navigateur.cookies)
+        self.assertIn(settings.SESSION_COOKIE_NAME, self.navigateur.cookies)
+        self.assertNotIn('csrftoken', self.navigateur.cookies)
+        self.assertNotIn('sessionid', self.navigateur.cookies)
+
+    def test_les_cookies_d_un_autre_projet_django_sur_la_meme_adresse_sont_sans_effet(self):
+        """Un autre projet local écrit « csrftoken » et « sessionid » sur 127.0.0.1 : cela ne doit rien casser ici."""
+        creer_utilisateur('anna@test.fr', MOT_DE_PASSE)
+        self.navigateur.cookies['csrftoken'] = 'jeton-d-un-autre-projet' + 'x' * 10
+        self.navigateur.cookies['sessionid'] = 'session-d-un-autre-projet'
+        reponse = self.envoyer(reverse('compte:connexion'), {'username': 'anna', 'password': MOT_DE_PASSE})
+        self.assertEqual(reponse.status_code, 302)
+        self.assertRedirects(reponse, reverse('compte:mes_billets'), fetch_redirect_response=False)
+        self.assertEqual(self.navigateur.get(reverse('compte:mes_billets')).status_code, 200)   # bien connecté malgré le cookie étranger

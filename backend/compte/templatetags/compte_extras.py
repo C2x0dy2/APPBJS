@@ -11,9 +11,14 @@ def champ(champ_formulaire, **attributs):
     aria-invalid="true" et aria-describedby pointent vers le message (id = <id du champ>-erreur)."""
     attrs = {'class': 'champ'}
     attrs.update({nom.replace('_', '-'): valeur for nom, valeur in attributs.items()})   # data_x devient data-x
+    decrit_par = []   # le lecteur d'écran annonce l'erreur puis l'aide, quand elles existent
     if champ_formulaire.errors:
         attrs['aria-invalid'] = 'true'
-        attrs['aria-describedby'] = f'{champ_formulaire.auto_id}-erreur'
+        decrit_par.append(f'{champ_formulaire.auto_id}-erreur')
+    if champ_formulaire.help_text:
+        decrit_par.append(f'{champ_formulaire.auto_id}-aide')
+    if decrit_par:
+        attrs['aria-describedby'] = ' '.join(decrit_par)
     return mark_safe(champ_formulaire.as_widget(attrs=attrs))
 
 

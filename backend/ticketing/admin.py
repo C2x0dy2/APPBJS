@@ -6,7 +6,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
-from . import models
+from . import images, models
 
 admin.site.site_header = _('Administration de la billetterie')
 admin.site.site_title = _('Billetterie')
@@ -19,7 +19,7 @@ def _apercu(champ_image, hauteur=70):
         image = getattr(obj, champ_image, None)
         if not image:
             return '—'
-        return format_html('<img src="{}" alt="" style="max-height:{}px;border-radius:6px">', image.url, hauteur)
+        return format_html('<img src="{}" alt="" style="max-height:{}px;border-radius:6px">', images.url_version(image, 'miniature'), hauteur)
     apercu.short_description = _('Aperçu')
     return apercu
 
@@ -27,18 +27,18 @@ def _apercu(champ_image, hauteur=70):
 # ---------------------------------------------------------------- Utilisateurs
 @admin.register(models.Utilisateur)
 class UtilisateurAdmin(UserAdmin):
-    ordering = ('email',)
-    list_display = ('email', 'first_name', 'last_name', 'email_verifie', 'is_staff', 'is_active')
+    ordering = ('username',)
+    list_display = ('username', 'email', 'first_name', 'last_name', 'email_verifie', 'is_staff', 'is_active')
     list_filter = ('email_verifie', 'is_staff', 'is_active')
-    search_fields = ('email', 'first_name', 'last_name')
+    search_fields = ('username', 'email', 'first_name', 'last_name')
     fieldsets = (
-        (None, {'fields': ('email', 'password')}),
-        (_('Informations personnelles'), {'fields': ('first_name', 'last_name', 'telephone', 'fuseau_horaire')}),
+        (None, {'fields': ('username', 'password')}),
+        (_('Informations personnelles'), {'fields': ('first_name', 'last_name', 'email', 'telephone', 'fuseau_horaire')}),
         (_('Compte'), {'fields': ('email_verifie', 'accepte_newsletter', 'cgv_acceptees_le')}),
         (_('Droits'), {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
         (_('Dates'), {'fields': ('last_login', 'date_joined')}),
     )
-    add_fieldsets = ((None, {'classes': ('wide',), 'fields': ('email', 'first_name', 'last_name', 'password1', 'password2')}),)
+    add_fieldsets = ((None, {'classes': ('wide',), 'fields': ('username', 'email', 'first_name', 'last_name', 'password1', 'password2')}),)
 
 
 # ---------------------------------------------------------------- Organisations
@@ -109,6 +109,7 @@ class CategorieAdmin(admin.ModelAdmin):
     search_fields = ('nom',)
     prepopulated_fields = {'slug': ('nom',)}
     readonly_fields = ('apercu_illustration',)
+    fields = ('nom', 'slug', 'ordre', 'actif', 'couleur', 'illustration', 'apercu_illustration', 'illustration_alt')
     apercu_illustration = _apercu('illustration')
 
     @admin.display(description=_('Couleur'))
@@ -118,13 +119,28 @@ class CategorieAdmin(admin.ModelAdmin):
         return format_html('<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:{}"></span>', obj.couleur)
 
 
+class ImageLieuInline(admin.TabularInline):
+    model = models.ImageLieu
+    extra = 1
+    fields = ('apercu', 'image', 'alt', 'ordre')
+    readonly_fields = ('apercu',)
+
+    @admin.display(description=_('Aperçu'))
+    def apercu(self, obj):
+        if not obj.pk or not obj.image:
+            return '—'
+        return format_html('<img src="{}" alt="" style="max-height:60px;border-radius:6px">', images.url_version(obj.image, 'miniature'))
+
+
 @admin.register(models.Lieu)
 class LieuAdmin(admin.ModelAdmin):
+    inlines = [ImageLieuInline]
+    fields = ('nom', 'adresse', 'code_postal', 'ville', 'photo_principale', 'apercu_photo', 'photo_principale_alt')
     list_display = ('nom', 'ville', 'adresse')
     list_filter = ('ville',)
     search_fields = ('nom', 'ville', 'adresse')
     readonly_fields = ('apercu_photo',)
-    apercu_photo = _apercu('photo')
+    apercu_photo = _apercu('photo_principale')
 
 
 class TypePlaceInline(admin.TabularInline):
@@ -133,6 +149,19 @@ class TypePlaceInline(admin.TabularInline):
     fields = ('nom', 'capacite', 'prix_base_centimes', 'vendues', 'retenues')
     readonly_fields = ('vendues', 'retenues')
     show_change_link = True   # ouvre la fiche du type de place pour y saisir ses tarifs « early »
+
+
+class ImageEvenementInline(admin.TabularInline):
+    model = models.ImageEvenement
+    extra = 1
+    fields = ('apercu', 'image', 'alt', 'ordre')
+    readonly_fields = ('apercu',)
+
+    @admin.display(description=_('Aperçu'))
+    def apercu(self, obj):
+        if not obj.pk or not obj.image:
+            return '—'
+        return format_html('<img src="{}" alt="" style="max-height:60px;border-radius:6px">', images.url_version(obj.image, 'miniature'))
 
 
 @admin.register(models.Evenement)
@@ -144,14 +173,16 @@ class EvenementAdmin(admin.ModelAdmin):
     prepopulated_fields = {'slug': ('titre',)}
     autocomplete_fields = ('lieu',)
     readonly_fields = ('apercu_image',)
-    inlines = [TypePlaceInline]
+    inlines = [TypePlaceInline, ImageEvenementInline]
     actions = ['publier', 'depublier']
     fieldsets = (
-        (_('Description'), {'fields': ('organisation', 'titre', 'slug', 'artiste', 'categorie', 'description', 'image', 'apercu_image')}),
+        (_('Description'), {'fields': ('organisation', 'titre', 'slug', 'artiste', 'categorie', 'description')}),
+        (_('Images'), {'fields': ('image_principale', 'apercu_image', 'image_principale_alt'),
+                       'description': _("La galerie se gère plus bas, dans « Images de l'événement ».")}),
         (_('Date et lieu'), {'fields': ('debut', 'fuseau_horaire', 'lieu', 'est_en_ligne')}),
         (_('Vente'), {'fields': ('date_limite_annulation', 'publie', 'a_la_une')}),
     )
-    apercu_image = _apercu('image', 120)
+    apercu_image = _apercu('image_principale', 120)
 
     @admin.action(description=_('Publier les événements sélectionnés'))
     def publier(self, request, queryset):
@@ -213,7 +244,7 @@ class BilletAdmin(admin.ModelAdmin):
 class MembreAdmin(admin.ModelAdmin):
     list_display = ('utilisateur', 'organisation', 'role')
     list_filter = ('role', 'organisation')
-    search_fields = ('utilisateur__email', 'organisation__nom')
+    search_fields = ('utilisateur__username', 'utilisateur__email', 'organisation__nom')
     autocomplete_fields = ('utilisateur',)
 
 
