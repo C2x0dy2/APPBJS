@@ -1,0 +1,41 @@
+/* Variables du site : couleurs, polices, tailles. Un seul endroit à modifier. */
+:root {
+  /* Violet / rose : navigation, boutons, grand panneau */
+  --panel: #5a1b9e;          /* violet du grand panneau */
+  --pink: #d6168a;           /* accent rose du logo : état actif, focus */
+  --grad: linear-gradient(135deg, #d6168a, #6a1fc9);   /* dégradé du logo, pour les boutons */
+  --tint: #fde8f4;           /* fond rose très pâle au survol */
+
+  /* Couleurs du collage (reprises des bulles de l'image) : accents vifs */
+  --yellow: #f4a62a;         /* jaune-orange */
+  --yellow-ink: #2a1500;     /* texte foncé lisible sur le jaune */
+  --violet-deep: #35106a;    /* violet foncé : texte sur fond jaune */
+  --red: #d9342b;
+  --red-strong: #bf281f;     /* rouge plus foncé : fond de badge avec texte blanc (contraste) */
+  --blue: #2a5bd7;
+  --green: #1f9d55;          /* indicateur de force du mot de passe, confirmations */
+
+  /* Teintes complémentaires (survols, traits) */
+  --pink-vif: #ff4fb0;       /* rose clair du logo : barres de l'écran de chargement */
+  --pink-ink: #8a0f5e;       /* rose foncé : texte survolé sur fond rose pâle */
+  --ligne-forte: #c9bddb;    /* pointillés des billets */
+
+  /* Mêmes couleurs en composantes RVB, pour les ombres et voiles : rgb(var(--ink-rgb) / .2) */
+  --ink-rgb: 29 11 51; --night-rgb: 18 4 31; --panel-rgb: 90 27 158; --red-rgb: 191 40 31; --pink-rgb: 214 22 138; --pink-vif-rgb: 255 79 176;
+
+  /* Rayons et largeurs */
+  --rayon-pilule: 999px; --rayon-s: 10px; --rayon-m: 12px; --rayon-l: 18px;
+  --largeur-max: 1400px;
+
+  /* Neutres */
+  --cream: #fffaf3; --ink: #1d0b33; --muted: #6b5d78; --line: #e7e0ee; --soft: #f3eef7;
+  --night: #12041f; --white: #fff;
+
+  /* Polices */
+  --body: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --display: "Anton", Impact, "Arial Narrow Bold", sans-serif;   /* titres condensés, en majuscules */
+  --serif: "Instrument Serif", Georgia, serif;                   /* mots en italique */
+
+  --d: 1.5s;                 /* délai d'apparition : le temps de l'écran de chargement */
+  --bottom: 68px;            /* hauteur de la navigation du bas (téléphone) */
+}

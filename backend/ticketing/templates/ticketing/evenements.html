@@ -1,0 +1,33 @@
+{% extends "ticketing/base.html" %}
+{% load i18n billetterie %}
+
+{% block title %}{% if q %}« {{ q }} » – {% elif categorie_active %}{{ categorie_active.nom }} – {% endif %}{% translate "Programmation" %}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+
+{% block content %}
+  <main class="results">
+    <h1 class="results-title">
+      {% if q %}{% translate "Résultats pour" %} <em>« {{ q }} »</em>{% elif categorie_active %}{{ categorie_active.nom }}{% else %}{% translate "Programmation" %}{% endif %}
+    </h1>
+    {% if cartes %}
+      <p class="results-count">{% blocktranslate count n=cartes|length %}{{ n }} événement{% plural %}{{ n }} événements{% endblocktranslate %}</p>
+      <ul class="grille">
+        {% for evenement in cartes %}<li>{% include "components/ticket_card.html" with event=evenement %}</li>{% endfor %}
+      </ul>
+    {% elif aucun_evenement %}
+      <p class="vide-message">{% translate "Aucun événement à venir pour le moment." %}</p>
+    {% else %}
+      <div class="vide">
+        <p class="vide-message">
+          {% translate "Aucun événement pour" %} <em>« {% if q %}{{ q }}{% else %}{{ categorie_active.nom }}{% endif %} »</em>
+        </p>
+        {% if categories %}
+          <p class="vide-aide">{% translate "Essayez une autre catégorie :" %}</p>
+          <ul class="vide-categories">
+            {% for c in categories %}<li><a href="{% url 'evenements' %}?categorie={{ c.slug }}">{{ c.nom }}</a></li>{% endfor %}
+          </ul>
+        {% endif %}
+        <a class="cta" href="{% url 'evenements' %}">{% translate "Voir toute la programmation" %}</a>
+      </div>
+    {% endif %}
+  </main>
+{% endblock %}

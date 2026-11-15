@@ -1,0 +1,24 @@
+{% extends "compte/base_auth.html" %}
+{% load i18n %}
+
+{% block title %}{% translate "Nouveau mot de passe" %}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+{% block classe_auth %}auth--carte{% endblock %}
+
+{% block panneau_titre %}<h1 class="auth-titre">{% if validlink %}{% translate "Nouveau mot de passe" %}{% else %}{% translate "Lien expiré" %}{% endif %}</h1>{% endblock %}
+{% block carte_titre %}{% if validlink %}{% translate "Nouveau mot de passe" %}{% else %}{% translate "Lien invalide" %}{% endif %}{% endblock %}
+
+{% block carte %}
+  {% if validlink %}
+    <form method="post" class="formulaire" novalidate data-chargement data-libelle-chargement="{% translate 'Enregistrement…' %}">
+      {% csrf_token %}
+      {% include "compte/_mdp.html" with champ=form.new_password1 force=True longueur_min=longueur_min %}
+      <button type="submit" class="btn-principal"><span class="btn-libelle">{% translate "Enregistrer le mot de passe" %}</span></button>
+    </form>
+  {% else %}
+    <div class="alerte" role="alert">
+      <svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 5v6M10 14v1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>{% translate "Ce lien n'est plus valable : il a expiré ou il a déjà servi." %}</span>
+    </div>
+    <a class="btn-principal btn-lien" href="{% url 'compte:mdp_oublie' %}">{% translate "Demander un nouveau lien" %}</a>
+  {% endif %}
+{% endblock %}

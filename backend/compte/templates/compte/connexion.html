@@ -1,0 +1,57 @@
+{% extends "compte/base_auth.html" %}
+{% load i18n billetterie compte_extras %}
+
+{% block title %}{% translate "Connexion" %}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+
+{% block panneau_titre %}
+  {% if site.auth_connexion_titre %}
+    <h1 class="auth-titre">{{ site.auth_connexion_titre|accent }}</h1>
+  {% else %}
+    <h1 class="sr-only">{% translate "Connexion" %}</h1>
+  {% endif %}
+  {% if site.auth_connexion_sous_titre %}<p class="auth-sous-titre">{{ site.auth_connexion_sous_titre }}</p>{% endif %}
+{% endblock %}
+
+{% block carte_titre %}{% translate "Connexion" %}{% endblock %}
+
+{% block carte %}
+  {# Arrivée depuis une réservation : on rappelle l'événement (lu depuis la base) #}
+  {% translate "Connecte-toi pour finaliser ta réservation" as consigne %}
+  {% include "compte/_encart_reservation.html" with evenement=evenement_en_cours consigne=consigne %}
+
+  {# Erreur globale : trop de tentatives, ou identifiants incorrects (même message dans tous les cas d'échec) #}
+  {% if bloque_minutes %}
+    <div class="alerte" role="alert">
+      <svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 5v6M10 14v1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>{% blocktranslate count n=bloque_minutes %}Trop de tentatives, réessaie dans {{ n }} minute.{% plural %}Trop de tentatives, réessaie dans {{ n }} minutes.{% endblocktranslate %}</span>
+    </div>
+  {% elif form.non_field_errors %}
+    <div class="alerte" role="alert">
+      <svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 5v6M10 14v1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>{{ form.non_field_errors.0 }}</span>
+    </div>
+  {% endif %}
+
+  <form method="post" class="formulaire" novalidate data-chargement data-libelle-chargement="{% translate 'Connexion…' %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ next }}">
+
+    {% translate "Adresse e-mail invalide" as message_email %}
+    {% include "compte/_champ.html" with champ=form.username valider_email=True autofocus=True message_email=message_email %}
+    {% include "compte/_mdp.html" with champ=form.password %}
+
+    <div class="options">
+      <label class="case">
+        <input type="checkbox" name="{{ form.remember_me.html_name }}" id="{{ form.remember_me.id_for_label }}" {% if form.remember_me.value %}checked{% endif %}>
+        <span>{{ form.remember_me.label }}</span>
+      </label>
+      <a class="lien" href="{% url 'compte:mdp_oublie' %}">{% translate "Mot de passe oublié ?" %}</a>
+    </div>
+
+    <button type="submit" class="btn-principal"><span class="btn-libelle">{% translate "Se connecter" %}</span></button>
+  </form>
+
+  <div class="auth-sep" role="separator"></div>
+  <p class="auth-bascule">{% translate "Pas encore de compte ?" %}
+    <a class="lien" href="{% url 'compte:inscription' %}{% if next %}?next={{ next|urlencode }}{% endif %}">{% translate "Créer un compte" %}</a></p>
+{% endblock %}

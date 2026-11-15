@@ -1,0 +1,46 @@
+{% extends "ticketing/base.html" %}
+{% load i18n tz billetterie %}
+
+{% block title %}{{ evenement.titre }}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+
+{% block content %}
+  <main class="fiche">
+    {% if evenement.image %}
+      <img class="fiche-image" src="{{ evenement.image.url }}" alt="{{ evenement.titre }}" width="1200" height="675">
+    {% endif %}
+
+    <div class="fiche-corps">
+      {% if evenement.categorie %}<p class="fiche-cat">{{ evenement.categorie.nom }}</p>{% endif %}
+      <h1 class="results-title">{{ evenement.titre }}</h1>
+      {% if evenement.artiste %}<p class="fiche-artiste">{{ evenement.artiste }}</p>{% endif %}
+
+      {# Date et heure dans le fuseau horaire du lieu #}
+      {% timezone evenement.fuseau_horaire %}
+        <p class="fiche-ligne"><time datetime="{{ evenement.debut|date:'c' }}">{{ evenement.debut|date:"DATE_FORMAT" }} · {{ evenement.debut|time:"TIME_FORMAT" }}</time></p>
+        {% if evenement.est_en_ligne %}
+          <p class="fiche-ligne" data-effect="local-time" data-utc="{{ evenement.debut|date:'c' }}" data-label="{% translate 'Chez vous' %}"></p>
+        {% endif %}
+      {% endtimezone %}
+      {% if evenement.est_en_ligne %}
+        <p class="fiche-ligne">{% translate "En ligne" %}</p>
+      {% elif evenement.lieu %}
+        <p class="fiche-ligne">{{ evenement.lieu.nom }}{% if evenement.lieu.adresse %}, {{ evenement.lieu.adresse }}{% endif %}, {{ evenement.lieu.ville }}</p>
+      {% endif %}
+
+      {% if evenement.description %}<div class="fiche-description">{{ evenement.description|linebreaks }}</div>{% endif %}
+
+      {% if types %}
+        <h2 class="fiche-sous-titre">{% translate "Places" %}</h2>
+        <ul class="fiche-places">
+          {% for ligne in types %}
+            <li>
+              <span>{{ ligne.type.nom }}</span>
+              <span>{% if ligne.prix == 0 %}{% translate "Gratuit" %}{% else %}{{ ligne.prix|prix:site.devise }}{% endif %}</span>
+              <span>{% if ligne.type.disponibles <= 0 %}{% translate "Complet" %}{% else %}{% blocktranslate count n=ligne.type.disponibles %}{{ n }} place restante{% plural %}{{ n }} places restantes{% endblocktranslate %}{% endif %}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </main>
+{% endblock %}

@@ -1,0 +1,84 @@
+/* ==========================================================================
+   Effets visuels. Chaque effet est expliqué en commentaire.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   EFFET « FORME TICKET » (composant components/ticket_card.html)
+
+   Le billet a une encoche en demi-cercle de chaque côté, à la jonction entre la
+   photo et les infos. Les encoches sont de VRAIS trous : on les fait avec un
+   masque (mask-image) composé de deux dégradés radiaux, un par côté. Chaque
+   dégradé est transparent dans un cercle centré sur le bord, opaque ailleurs.
+   « mask-composite: intersect » ne garde que ce que les deux masques laissent
+   voir. On voit donc le fond de la page à travers les encoches, sans rond de
+   couleur posé par-dessus.
+
+   Un masque coupe aussi l'ombre portée. On la met donc sur l'élément parent
+   (.ticket-wrap) avec filter: drop-shadow, qui épouse la forme avec encoches.
+
+   Réglages : --notch-size (rayon) et --notch-position (distance depuis le haut).
+   -------------------------------------------------------------------------- */
+.ticket-wrap {
+  filter: drop-shadow(0 3px 7px rgb(var(--ink-rgb) / .14));
+  transition: transform .25s ease, filter .25s ease;
+}
+.ticket-wrap:hover,
+.ticket-wrap:focus-within {
+  transform: translateY(-4px) rotate(1deg);
+  filter: drop-shadow(0 10px 14px rgb(var(--ink-rgb) / .22));
+}
+
+.ticket {
+  --notch-size: 16px;        /* rayon des encoches */
+  --notch-position: 160px;   /* hauteur de la jonction photo / infos */
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--rayon-l);
+  background: #fff;
+  -webkit-mask-image:
+    radial-gradient(circle var(--notch-size) at 0 var(--notch-position), #0000 98%, #000),
+    radial-gradient(circle var(--notch-size) at 100% var(--notch-position), #0000 98%, #000);
+          mask-image:
+    radial-gradient(circle var(--notch-size) at 0 var(--notch-position), #0000 98%, #000),
+    radial-gradient(circle var(--notch-size) at 100% var(--notch-position), #0000 98%, #000);
+  -webkit-mask-composite: source-in;   /* équivalent de « intersect » pour WebKit */
+          mask-composite: intersect;
+}
+
+/* Ligne pointillée à la hauteur des encoches : la « découpe » du billet */
+.ticket::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--notch-size) + 8px);
+  right: calc(var(--notch-size) + 8px);
+  top: var(--notch-position);
+  border-top: 2px dashed var(--ligne-forte);
+  pointer-events: none;
+}
+
+/* La photo occupe exactement la partie au-dessus de la jonction */
+.ticket-media { position: relative; height: var(--notch-position); background: var(--soft); }
+.ticket-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ticket-wrap, .ticket-wrap:hover, .ticket-wrap:focus-within { transform: none; transition: none; }
+}
+
+/* --------------------------------------------------------------------------
+   EFFET « PAPIER DÉCHIRÉ » (composant components/torn_divider.html)
+
+   Un SVG qui s'étire sur toute la largeur de la section parente (position:
+   relative) et se colle à son bord. Il contient deux formes aux bords
+   irréguliers : un liseré clair (le bord blanc d'une feuille déchirée) puis,
+   juste dessous, la couleur de la section suivante. preserveAspectRatio="none"
+   étire le dessin à la largeur voulue. Pour une déchirure en haut, on retourne
+   le dessin verticalement (scaleY(-1)).
+   -------------------------------------------------------------------------- */
+.torn { position: absolute; left: 0; width: 100%; height: clamp(36px, 6vw, 80px); display: block; pointer-events: none; }
+.torn .rim { fill: var(--torn-rim, #fff); }
+.torn .paper { fill: var(--torn-color, var(--cream)); }
+.torn--bottom { bottom: -1px; }
+.torn--top { top: -1px; transform: scaleY(-1); }
+
+/* Variant « bord droit » : la déchirure est verticale et occupe toute la hauteur de la section parente. */
+.torn--right { top: 0; bottom: 0; right: -1px; left: auto; width: clamp(28px, 3vw, 56px); height: 100%; }

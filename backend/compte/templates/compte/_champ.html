@@ -1,0 +1,13 @@
+{% load compte_extras %}{% comment %}
+  Un champ de formulaire complet : libellé visible, saisie, message d'erreur relié au champ.
+  Appel : {% include "compte/_champ.html" with champ=form.email valider_email=True autofocus=True %}
+  Paramètres facultatifs : valider_email (vérifie le format au blur), autofocus (focus auto sur ordinateur).
+{% endcomment %}
+<div class="groupe">
+  <label class="libelle" for="{{ champ.id_for_label }}">{{ champ.label }}</label>
+  {% if valider_email and autofocus %}{% champ champ data_valider_email="1" data_message_email=message_email data_autofocus="1" %}
+  {% elif valider_email %}{% champ champ data_valider_email="1" data_message_email=message_email %}
+  {% elif autofocus %}{% champ champ data_autofocus="1" %}
+  {% else %}{% champ champ %}{% endif %}
+  {% include "compte/_erreurs.html" with champ=champ %}
+</div>

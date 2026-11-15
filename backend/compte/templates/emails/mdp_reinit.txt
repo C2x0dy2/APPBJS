@@ -1,0 +1,10 @@
+{% load i18n %}{% autoescape off %}{% translate "Salut," %}
+
+{% translate "Tu as demandé à changer ton mot de passe. Ouvre ce lien pour en choisir un nouveau :" %}
+
+{{ protocol }}://{{ domain }}{% url 'compte:mdp_nouveau' uidb64=uid token=token %}
+
+{% translate "Si tu n'as rien demandé, ignore ce message : ton mot de passe ne change pas." %}
+{% if signature %}
+{{ signature }}{% endif %}
+{% endautoescape %}

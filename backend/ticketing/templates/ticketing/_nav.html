@@ -1,0 +1,150 @@
+{% load static i18n tz %}{% comment %}
+  Navigation : tout vient de la base (catégories, événements à la une, villes, coordonnées).
+  Aucun lien ni libellé de catégorie n'est écrit en dur.
+{% endcomment %}
+<!-- Tiroir mobile (ouvert par le bouton menu) : case à cocher + panneau, sans JavaScript obligatoire -->
+<input type="checkbox" id="drawer-toggle" class="drawer-toggle" aria-hidden="true" tabindex="-1">
+<label for="drawer-toggle" class="scrim" aria-hidden="true"></label>
+<aside class="drawer" id="drawer" aria-label="{% translate 'Menu principal' %}">
+  <div class="drawer-head">
+    <a class="brand" href="{% url 'accueil' %}">{% if site.nom_site %}{{ site.nom_site }}{% else %}{% translate "Accueil" %}{% endif %}</a>
+    <label for="drawer-toggle" class="close" role="button" tabindex="0" aria-label="{% translate 'Fermer le menu' %}">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </label>
+  </div>
+
+  {% if categories %}
+  <p class="drawer-title">{% translate "Catégories" %}</p>
+  <ul class="drawer-list">
+    {% for c in categories %}<li><a href="{% url 'evenements' %}?categorie={{ c.slug }}">{{ c.nom }}</a></li>{% endfor %}
+    <li><a href="{% url 'evenements' %}">{% translate "Toute la programmation" %}</a></li>
+  </ul>
+  {% endif %}
+
+  {% if menu_a_la_une %}
+  <p class="drawer-title">{% translate "À la une" %}</p>
+  <ul class="drawer-list">
+    {% for e in menu_a_la_une %}
+      <li><a href="{% url 'evenement_detail' e.slug %}">{{ e.titre }}
+        <small>{% timezone e.fuseau_horaire %}{{ e.debut|date:"D j N" }}{% endtimezone %}{% if e.lieu %} · {{ e.lieu.nom }}{% endif %}</small></a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if villes %}
+  <p class="drawer-title">{% translate "Près de chez vous" %}</p>
+  <ul class="drawer-list chips">
+    {% for ville in villes %}<li><a href="{% url 'evenements' %}?q={{ ville|urlencode }}">{{ ville }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if site.email_contact or site.telephone_contact or request.user.is_staff %}
+  <p class="drawer-title">{% translate "Aide et contact" %}</p>
+  <ul class="drawer-list">
+    {% if site.email_contact %}<li><a href="mailto:{{ site.email_contact }}">{{ site.email_contact }}</a></li>{% endif %}
+    {% if site.telephone_contact %}<li><a href="tel:{{ site.telephone_contact }}">{{ site.telephone_contact }}</a></li>{% endif %}
+    {% if request.user.is_staff %}<li><a href="{% url 'admin:index' %}">{% translate "Espace organisateur" %}</a></li>{% endif %}
+  </ul>
+  {% endif %}
+</aside>
+
+<!-- Barre principale, collée en haut au défilement -->
+<header class="bar">
+  <div class="bar-in">
+    <label for="drawer-toggle" class="burger" role="button" tabindex="0" aria-label="{% translate 'Ouvrir le menu' %}" aria-controls="drawer">
+      <svg viewBox="0 0 24 24" width="24" height="24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </label>
+
+    <a class="brand" href="{% url 'accueil' %}" aria-label="{% translate 'Accueil' %}">
+      {% if site.logo %}<img src="{{ site.logo.url }}" alt="" width="40" height="40">{% endif %}
+      {% if site.nom_site %}<span>{{ site.nom_site }}</span>{% elif not site.logo %}<span>{% translate "Accueil" %}</span>{% endif %}
+    </a>
+
+    <nav class="cats" aria-label="{% translate 'Catégories' %}">
+      {% for c in categories_barre %}<a href="{% url 'evenements' %}?categorie={{ c.slug }}">{{ c.nom }}</a>{% endfor %}
+      {% if categories or menu_a_la_une or villes %}
+      <div class="has-mega">
+        <button type="button" class="mega-btn" aria-haspopup="true">{% translate "Explorer" %}
+          <svg viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <div class="mega">
+          <div class="mega-in">
+            <div>
+              <p class="mega-title">{% translate "Catégories" %}</p>
+              {% for c in categories %}<a href="{% url 'evenements' %}?categorie={{ c.slug }}">{{ c.nom }}</a>{% endfor %}
+              <a href="{% url 'evenements' %}">{% translate "Toute la programmation" %}</a>
+            </div>
+            {% if menu_a_la_une %}
+            <div>
+              <p class="mega-title">{% translate "Événements à la une" %}</p>
+              {% for e in menu_a_la_une %}
+                <a class="feat" href="{% url 'evenement_detail' e.slug %}"><b>{{ e.titre }}</b>
+                  <small>{% timezone e.fuseau_horaire %}{{ e.debut|date:"D j N" }}{% endtimezone %}{% if e.lieu %} · {{ e.lieu.nom }}{% endif %}</small></a>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% if villes %}
+            <div>
+              <p class="mega-title">{% translate "Près de chez vous" %}</p>
+              <div class="mega-chips">{% for ville in villes %}<a href="{% url 'evenements' %}?q={{ ville|urlencode }}">{{ ville }}</a>{% endfor %}</div>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+      {% if site.email_contact %}<a href="mailto:{{ site.email_contact }}">{% translate "Aide" %}</a>{% endif %}
+    </nav>
+
+    <form class="search" role="search" action="{% url 'evenements' %}" method="get">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input type="search" name="q" value="{{ q|default:'' }}" placeholder="{% translate 'Artiste, événement, salle…' %}" aria-label="{% translate 'Rechercher' %}" maxlength="80" autocomplete="off">
+      <button type="submit">{% translate "Rechercher" %}</button>
+    </form>
+
+    <div class="acts">
+      <a class="act act-solid" href="{% if request.user.is_authenticated %}{% url 'compte:mes_billets' %}{% else %}{% url 'compte:connexion' %}{% endif %}" aria-label="{% translate 'Compte' %}">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4.5 20c.8-4 4-6 7.5-6s6.7 2 7.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>{% translate "Compte" %}</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- Navigation du bas (téléphone) -->
+<nav class="bottom" aria-label="{% translate 'Navigation rapide' %}">
+  <a href="{% url 'accueil' %}" {% if request.resolver_match.url_name == 'accueil' %}aria-current="page"{% endif %}>
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    {% translate "Accueil" %}
+  </a>
+  <a href="{% url 'evenements' %}" {% if request.resolver_match.url_name == 'evenements' %}aria-current="page"{% endif %}>
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    {% translate "Rechercher" %}
+  </a>
+  <a href="{% if request.user.is_authenticated %}{% url 'compte:mes_billets' %}{% else %}{% url 'compte:connexion' %}{% endif %}">
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4.5 20c.8-4 4-6 7.5-6s6.7 2 7.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    {% translate "Compte" %}
+  </a>
+  <label for="drawer-toggle" class="bottom-menu" role="button" tabindex="0">
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    {% translate "Menu" %}
+  </label>
+</nav>
+
+<script>
+  /* Tiroir : Échap le ferme, Entrée/Espace sur le bouton l'ouvre, et l'état est annoncé aux lecteurs d'écran. */
+  (function () {
+    var box = document.getElementById('drawer-toggle');
+    var burger = document.querySelector('.burger');
+    if (!box || !burger) return;
+    function sync() { burger.setAttribute('aria-expanded', box.checked ? 'true' : 'false'); }
+    box.addEventListener('change', sync); sync();
+    document.querySelectorAll('.burger, .close, .bottom-menu').forEach(function (el) {
+      el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.checked = !box.checked; sync(); }
+      });
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && box.checked) { box.checked = false; sync(); burger.focus(); } });
+    document.querySelectorAll('.drawer a').forEach(function (a) { a.addEventListener('click', function () { box.checked = false; sync(); }); });
+  })();
+</script>

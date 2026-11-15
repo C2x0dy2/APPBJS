@@ -1,0 +1,50 @@
+{% load i18n tz billetterie %}{% comment %}
+  Carte « billet », la même sur tout le site.
+  Appel : {% include "components/ticket_card.html" with event=evenement %}
+  `evenement` vient de presenters.preparer_evenements : il porte les valeurs calculées en base
+  (places_restantes, prix_min, gratuit, statut). La forme (encoches, pointillés, ombre) est dans effects.css.
+{% endcomment %}
+<article class="ticket-wrap">
+  <div class="ticket">
+    <div class="ticket-media">
+      {% if event.image %}
+        <img src="{{ event.image.url }}" alt="{{ event.titre }}" width="600" height="340" loading="lazy">
+      {% elif event.categorie.illustration %}
+        <img src="{{ event.categorie.illustration.url }}" alt="" width="600" height="340" loading="lazy">
+      {% else %}
+        <div class="ticket-fallback" {% if event.categorie.couleur %}style="--fond:{{ event.categorie.couleur }}"{% endif %} aria-hidden="true"></div>
+      {% endif %}
+      {% if event.categorie %}<span class="ticket-cat">{{ event.categorie.nom }}</span>{% endif %}
+    </div>
+
+    <div class="ticket-body">
+      <h3 class="ticket-title"><a class="ticket-link" href="{% url 'evenement_detail' event.slug %}">{{ event.titre }}</a></h3>
+      {# Date et heure dans le fuseau horaire du lieu de l'événement #}
+      {% timezone event.fuseau_horaire %}
+        <p class="ticket-meta"><time datetime="{{ event.debut|date:'c' }}">{{ event.debut|date:"D j N" }} · {{ event.debut|time:"TIME_FORMAT" }}</time></p>
+        {% if event.est_en_ligne %}
+          {# Événement en ligne : l'heure chez le visiteur est ajoutée par effects.js #}
+          <p class="ticket-meta" data-effect="local-time" data-utc="{{ event.debut|date:'c' }}" data-label="{% translate 'Chez vous' %}"></p>
+        {% endif %}
+      {% endtimezone %}
+      {% if event.est_en_ligne %}
+        <p class="ticket-meta">{% translate "En ligne" %}</p>
+      {% elif event.lieu %}
+        <p class="ticket-meta">{{ event.lieu.nom }}, {{ event.lieu.ville }}</p>
+      {% endif %}
+
+      <div class="ticket-foot">
+        {% if event.prix_min is not None %}
+          <span class="ticket-price">
+            {% if event.gratuit %}<b>{% translate "Gratuit" %}</b>{% else %}{% translate "dès" %} <b>{{ event.prix_min|prix:site.devise }}</b>{% endif %}
+          </span>
+        {% endif %}
+        {% if event.statut == "presque_complet" %}
+          <span class="urgency urgency--low">{% blocktranslate count n=event.places_restantes %}Plus qu'{{ n }} place{% plural %}Plus que {{ n }} places{% endblocktranslate %}</span>
+        {% elif event.statut == "complet" %}
+          <span class="urgency urgency--full">{% translate "Complet · liste d'attente" %}</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</article>

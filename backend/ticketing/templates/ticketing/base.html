@@ -1,0 +1,51 @@
+{% load static i18n %}{% get_current_language as LANGUAGE_CODE %}<!doctype html>
+<html lang="{{ LANGUAGE_CODE }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% if site.nom_site %}{{ site.nom_site }}{% else %}{% translate "Billetterie" %}{% endif %}{% endblock %}</title>
+  {% if site.meta_description %}<meta name="description" content="{{ site.meta_description }}">{% endif %}
+  {% if site.favicon %}<link rel="icon" href="{{ site.favicon.url }}">{% endif %}
+  <link rel="preload" href="{% static 'fonts/anton.woff2' %}" as="font" type="font/woff2" crossorigin>
+  {% block head_extra %}{% endblock %}
+  {# ?v=… : change quand un fichier est modifié, pour que le navigateur recharge le bon CSS/JS #}
+  <link rel="stylesheet" href="{% static 'css/variables.css' %}?v={{ version_assets }}">
+  <link rel="stylesheet" href="{% static 'css/home.css' %}?v={{ version_assets }}">
+  <link rel="stylesheet" href="{% static 'css/effects.css' %}?v={{ version_assets }}">
+  {% block css_extra %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  {% block before_nav %}{% endblock %}
+
+  {# Compte non vérifié : on peut naviguer, mais pas payer. Le bandeau reste jusqu'à la vérification. #}
+  {% if email_a_verifier %}
+    <div class="bandeau-verif" role="status">
+      <span>{% translate "Vérifie ton e-mail pour pouvoir payer" %}</span>
+      <form method="post" action="{% url 'compte:renvoyer_verification' %}">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" class="lien-bouton">{% translate "Renvoyer le lien" %}</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% block navigation %}{% include "ticketing/_nav.html" %}{% endblock %}
+
+  {# Messages Django (« Bienvenue ! »…) affichés en petites notifications qui disparaissent seules #}
+  {% if messages %}
+    <div class="toasts" role="status" aria-live="polite">
+      {% for message in messages %}
+        <div class="toast toast--{{ message.level_tag }}" data-effect="toast">
+          <span>{{ message }}</span>
+          <button type="button" class="toast-x" aria-label="{% translate 'Fermer' %}">×</button>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+
+  <script src="{% static 'js/effects.js' %}?v={{ version_assets }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,13 @@
+{% extends "ticketing/base.html" %}
+{% load i18n %}
+
+{% block title %}{{ page.titre }}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+
+{% block content %}
+  <main class="fiche">
+    <h1 class="results-title">{{ page.titre }}</h1>
+    {# Texte saisi dans l'admin : échappé, les retours à la ligne sont conservés #}
+    <div class="fiche-description">{{ page.contenu|linebreaks }}</div>
+    <p class="results-count">{% blocktranslate with date=page.modifiee_le|date:"DATE_FORMAT" %}Dernière mise à jour : {{ date }}{% endblocktranslate %}</p>
+  </main>
+{% endblock %}

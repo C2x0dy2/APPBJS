@@ -1,0 +1,64 @@
+{% extends "compte/base_auth.html" %}
+{% load i18n billetterie compte_extras %}
+
+{% block title %}{% translate "Inscription" %}{% if site.nom_site %} – {{ site.nom_site }}{% endif %}{% endblock %}
+
+{% block panneau_titre %}
+  {% if site.auth_inscription_titre %}
+    <h1 class="auth-titre">{{ site.auth_inscription_titre|accent }}</h1>
+  {% else %}
+    <h1 class="sr-only">{% translate "Inscription" %}</h1>
+  {% endif %}
+  {% if site.auth_inscription_sous_titre %}<p class="auth-sous-titre">{{ site.auth_inscription_sous_titre }}</p>{% endif %}
+{% endblock %}
+
+{% block carte_titre %}{% translate "Inscription" %}{% endblock %}
+
+{% block carte %}
+  {% translate "Crée ton compte pour finaliser ta réservation" as consigne %}
+  {% include "compte/_encart_reservation.html" with evenement=evenement_en_cours consigne=consigne %}
+
+  <form method="post" class="formulaire" novalidate data-chargement data-libelle-chargement="{% translate 'Création du compte…' %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ next }}">
+
+    {# Prénom et nom : côte à côte sur ordinateur, empilés sur téléphone #}
+    <div class="deux-champs">
+      {% include "compte/_champ.html" with champ=form.first_name autofocus=True %}
+      {% include "compte/_champ.html" with champ=form.last_name %}
+    </div>
+
+    {% translate "Adresse e-mail invalide" as message_email %}
+    {% include "compte/_champ.html" with champ=form.email valider_email=True message_email=message_email %}
+    {% include "compte/_mdp.html" with champ=form.password force=True longueur_min=longueur_min %}
+
+    {# Case obligatoire : les liens ne s'affichent que si les pages ont été choisies dans « Paramètres du site » #}
+    <div class="groupe">
+      <label class="case case--haut">
+        <input type="checkbox" name="{{ form.accepte_cgv.html_name }}" id="{{ form.accepte_cgv.id_for_label }}" required
+               {% if form.accepte_cgv.value %}checked{% endif %}
+               {% if form.accepte_cgv.errors %}aria-invalid="true" aria-describedby="{{ form.accepte_cgv.auto_id }}-erreur"{% endif %}>
+        <span>
+          {% translate "J'accepte" %}
+          {% if site.page_cgv.publiee %}<a class="lien" href="{% url 'page_legale' site.page_cgv.slug %}" target="_blank" rel="noopener">{% translate "les CGV" %}</a>{% else %}{% translate "les CGV" %}{% endif %}
+          {% translate "et" %}
+          {% if site.page_confidentialite.publiee %}<a class="lien" href="{% url 'page_legale' site.page_confidentialite.slug %}" target="_blank" rel="noopener">{% translate "la politique de confidentialité" %}</a>{% else %}{% translate "la politique de confidentialité" %}{% endif %}
+        </span>
+      </label>
+      {% include "compte/_erreurs.html" with champ=form.accepte_cgv %}
+    </div>
+
+    <div class="groupe">
+      <label class="case case--haut">
+        <input type="checkbox" name="{{ form.accepte_newsletter.html_name }}" id="{{ form.accepte_newsletter.id_for_label }}" {% if form.accepte_newsletter.value %}checked{% endif %}>
+        <span>{% translate "Je veux recevoir les alertes et la newsletter (facultatif)" %}</span>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-principal"><span class="btn-libelle">{% translate "Créer mon compte" %}</span></button>
+  </form>
+
+  <div class="auth-sep" role="separator"></div>
+  <p class="auth-bascule">{% translate "Déjà un compte ?" %}
+    <a class="lien" href="{% url 'compte:connexion' %}{% if next %}?next={{ next|urlencode }}{% endif %}">{% translate "Se connecter" %}</a></p>
+{% endblock %}

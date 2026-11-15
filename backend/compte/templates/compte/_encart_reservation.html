@@ -1,0 +1,19 @@
+{% load i18n tz %}{% comment %}Rappel de l'événement en cours de réservation (lu depuis la base). Paramètres : evenement, consigne.{% endcomment %}
+{% if evenement %}
+  <div class="encart-evenement">
+    {% if evenement.image %}
+      <img class="miniature" src="{{ evenement.image.url }}" alt="" width="64" height="64">
+    {% elif evenement.categorie.illustration %}
+      <img class="miniature" src="{{ evenement.categorie.illustration.url }}" alt="" width="64" height="64">
+    {% else %}
+      <span class="miniature miniature--vide" {% if evenement.categorie.couleur %}style="--fond:{{ evenement.categorie.couleur }}"{% endif %} aria-hidden="true"></span>
+    {% endif %}
+    <div>
+      <p class="encart-consigne">{{ consigne }}</p>
+      <p class="encart-nom">{{ evenement.titre }}</p>
+      {% timezone evenement.fuseau_horaire %}
+        <p class="encart-date">{{ evenement.debut|date:"D j N" }} · {{ evenement.debut|time:"TIME_FORMAT" }}</p>
+      {% endtimezone %}
+    </div>
+  </div>
+{% endif %}
