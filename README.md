@@ -16,6 +16,9 @@ cp .env.example .env     # puis renseigner l'adresse et la clé publique du proj
 npx expo start           # « w » pour le web ; ou Expo Go / un émulateur
 ```
 
+Il faut **Node.js 22 ou plus** : le web est rendu à l'avance par Node (`web.output: "static"`), et `supabase-js` y a
+besoin du `WebSocket` intégré à Node 22 (avec Node 20, `npx expo export --platform web` échoue au rendu des pages).
+
 Sans ces deux variables, l'application s'arrête au démarrage avec un message qui les nomme. Après chaque changement du
 `.env` : `npx expo start --clear`.
 
@@ -41,6 +44,14 @@ rejouer d'anciens résultats).
   `get_event_stats`, `get_event_participants`, `get_collective_summary`, `validate_ticket_entry`, `create_profile`.
 - **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement),
   `create-checkout-session` (ouvre le paiement Stripe d'une réservation par carte, bouton « Payer »).
+
+### Réglage à faire dans le tableau de bord Supabase (liens reçus par e-mail)
+
+Les e-mails de confirmation d'inscription et de mot de passe oublié ramènent sur l'app (`/verify-email`,
+`/reset-password`, voir `src/services/auth-links.ts`). Supabase n'y renvoie que si ces adresses sont autorisées :
+*Authentication → URL Configuration → Redirect URLs*, ajouter l'adresse du site web suivie de `/**`
+(ex. `https://billetterie.exemple.fr/**`) et `billeterie://**` pour l'app sur téléphone (en développement avec
+Expo Go : `exp://**`). Sans ce réglage, le lien ouvre la page d'accueil au lieu du bon écran.
 
 Les migrations SQL et les Edge Functions sont **volontairement gardées hors de ce dépôt** (décision d'équipe du 18/11) :
 elles vivent dans le dépôt séparé `APPBJS-Bintou`, pas ici. Ne pas les réimporter dans `front-divine` — ça a déjà été fait

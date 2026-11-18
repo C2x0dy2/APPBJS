@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
 
 import { ApiError, onSessionExpired } from "../services/api";
+import { consumeInitialAuthLink, listenToAuthLinks } from "../services/auth-links";
 import { Credentials, fetchMe, login, logout, register } from "../services/authservices";
 import { getToken } from "../services/session-storage";
 import { Role, User } from "../types/user";
@@ -23,7 +24,8 @@ interface AuthContextValue {
   startupError: unknown; // pourquoi le lancement a échoué (status = "unreachable")
   retryStartup: () => void;
   signIn: (credentials: Credentials) => Promise<User>; // lève une ApiError si la connexion échoue
-  signUp: (form: RegisterForm) => Promise<User>; // idem : l'inscription connecte directement
+  // idem ; null = compte créé mais adresse e-mail à confirmer avant de pouvoir se connecter (réglage du projet Supabase)
+  signUp: (form: RegisterForm) => Promise<User | null>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<void>; // relit la personne sur le serveur (par exemple une fois son e-mail vérifié)
   // Un organisateur peut gérer plusieurs collectifs : celui sur lequel il travaille (le premier, tant qu'il n'en choisit pas un autre).
@@ -47,6 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let active = true;
     (async () => {
       try {
+        // Téléphone : l'app a pu être ouverte par un lien reçu par e-mail (confirmation, mot de passe oublié).
+        await consumeInitialAuthLink().catch(() => undefined);
         if (await getToken()) {
           const me = await fetchMe();
           if (active) setUser(me);
@@ -70,10 +74,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Le serveur refuse le jeton en cours de route (expiré, ou révoqué depuis un autre appareil) : retour à l'état déconnecté.
   useEffect(() => onSessionExpired(() => setUser(null)), []);
 
-  async function startSession(request: Promise<User>): Promise<User> {
+  // Téléphone : un lien reçu par e-mail ouvert pendant que l'app tourne ouvre une session : on relit la personne.
+  useEffect(
+    () =>
+      listenToAuthLinks(() => {
+        fetchMe().then(setUser, () => undefined);
+      }),
+    []
+  );
+
+  async function startSession<T extends User | null>(request: Promise<T>): Promise<T> {
     const loggedIn = await request;
-    setUser(loggedIn);
-    setChosenCollectiveId(undefined);
+    if (loggedIn) {
+      setUser(loggedIn);
+      setChosenCollectiveId(undefined);
+    }
     return loggedIn; // l'écran sait ainsi où envoyer la personne (acheteur ou organisateur)
   }
 

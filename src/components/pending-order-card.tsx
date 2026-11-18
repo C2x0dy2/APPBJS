@@ -1,4 +1,3 @@
-import * as WebBrowser from "expo-web-browser";
 import { router } from "expo-router";
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";
@@ -12,7 +11,7 @@ import { Icon } from "@/components/ui/icon";
 import { useCountdown } from "@/hooks/use-countdown";
 import { useTheme } from "@/hooks/use-theme";
 import { errorMessage } from "@/services/api";
-import { payOrder } from "@/services/ticketservices";
+import { openCheckout, payOrder } from "@/services/ticketservices";
 import { PendingOrderDetails } from "../types/order";
 import { formatCountdown, formatPrice } from "../utils/format";
 
@@ -32,8 +31,8 @@ export function PendingOrderCard({ details, onPaid }: { details: PendingOrderDet
     setPayError("");
     try {
       const { url } = await payOrder(order.id);
-      await WebBrowser.openBrowserAsync(url);
-      onPaid?.();
+      // Sur le web, la page part vers Stripe puis revient sur le tableau de bord, qui se relit tout seul.
+      if ((await openCheckout(url)) === "closed") onPaid?.();
     } catch (error) {
       setPayError(errorMessage(error, "Impossible d'ouvrir le paiement. Réessaie."));
     }

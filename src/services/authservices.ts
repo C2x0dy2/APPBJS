@@ -2,6 +2,7 @@ import { supabase } from "../lib/supabase";
 import { CollectiveRole, Role, User } from "../types/user";
 import { RegisterForm } from "../utils/validate-auth";
 import { ApiError, mapSupabaseError } from "./api";
+import { authRedirectUrl } from "./auth-links";
 
 // La connexion, l'inscription, la vérification de l'e-mail et le mot de passe oublié passent par Supabase Auth.
 // La connexion se fait par NOM D'UTILISATEUR (pas par e-mail) : supabase.auth ne sait authentifier que par e-mail,
@@ -64,11 +65,16 @@ export async function login({ username, password }: Credentials): Promise<User> 
   return buildUser();
 }
 
-export async function register(form: RegisterForm): Promise<User> {
+// Renvoie la personne connectée, ou null si le projet Supabase exige de confirmer l'adresse e-mail d'abord : dans ce
+// cas il n'y a pas encore de session, et se connecter tout de suite serait refusé par Supabase (« Email not
+// confirmed », affiché avant comme « mot de passe incorrect » juste après une inscription réussie).
+export async function register(form: RegisterForm): Promise<User | null> {
   const { data, error } = await supabase.auth.signUp({
     email: form.email.trim(),
     password: form.password,
     options: {
+      // Le lien de confirmation ramène sur l'app (voir services/auth-links.ts).
+      emailRedirectTo: authRedirectUrl("/verify-email"),
       data: {
         name: form.username.trim(),
         accepted_terms_at: new Date().toISOString(),
@@ -82,11 +88,19 @@ export async function register(form: RegisterForm): Promise<User> {
     p_user_id: data.user.id,
     p_username: form.username.trim(),
   });
-  if (profileError) throw mapSupabaseError(profileError);
+  if (profileError) {
+    if (/profiles_username_key|duplicate key/.test(profileError.message)) {
+      const taken = "Ce nom d'utilisateur est déjà pris.";
+      throw new ApiError(409, "username_taken", taken, { username: taken });
+    }
+    if (/invalid_username/.test(profileError.message)) {
+      const invalid = "Nom d'utilisateur invalide (3 caractères minimum).";
+      throw new ApiError(422, "invalid_username", invalid, { username: invalid });
+    }
+    throw mapSupabaseError(profileError);
+  }
 
-  // Si le projet Supabase exige une confirmation d'e-mail, signUp() ne renvoie aucune session active : on se
-  // connecte explicitement pour que l'app continue (la vérification elle-même reste à faire ensuite).
-  if (!data.session) return login({ username: form.username, password: form.password });
+  if (!data.session) return null;
   return buildUser();
 }
 
@@ -98,18 +112,37 @@ export async function logout(): Promise<void> {
   await supabase.auth.signOut();
 }
 
-// Même réponse que l'adresse existe ou non (Supabase ne le révèle pas non plus).
+// Même réponse que l'adresse existe ou non (Supabase ne le révèle pas non plus). Le lien reçu ramène sur l'écran
+// /reset-password de l'app (avant : aucune adresse de retour, le lien ouvrait la page d'accueil et connectait la
+// personne sans jamais lui proposer de nouveau mot de passe).
 export async function requestPasswordReset(email: string): Promise<void> {
-  const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: authRedirectUrl("/reset-password"),
+  });
   if (error) throw mapSupabaseError(error);
 }
 
-// Le lien reçu par e-mail établit déjà une session de récupération à l'ouverture de la page (Supabase la détecte
-// dans l'URL, voir lib/supabase.ts) : uid/token ne sont plus utilisés, gardés seulement pour que l'écran existant
-// n'ait pas besoin de changer sa signature d'appel.
-export async function confirmPasswordReset(_uid: string, _token: string, password: string): Promise<void> {
+// Appelé depuis l'écran ouvert par le lien « mot de passe oublié » (la session de récupération est déjà ouverte,
+// voir services/auth-links.ts). Ferme ensuite TOUTES les sessions du compte, celle-ci comprise : la personne se
+// reconnecte avec son nouveau mot de passe, et un appareil volé ou oublié est déconnecté.
+export async function setNewPassword(password: string): Promise<void> {
   const { error } = await supabase.auth.updateUser({ password });
-  if (error) throw mapSupabaseError(error);
+  if (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "same_password") {
+      const message = "Choisis un mot de passe différent de l'ancien.";
+      throw new ApiError(422, code, message, { password: message });
+    }
+    if (code === "weak_password") {
+      const message = "Ce mot de passe est trop faible.";
+      throw new ApiError(422, code, message, { password: message });
+    }
+    if (error.name === "AuthSessionMissingError" || code === "session_not_found") {
+      throw new ApiError(401, "invalid_link", "Ce lien n'est plus valide. Demande-en un nouveau.");
+    }
+    throw mapSupabaseError(error, "Impossible de changer le mot de passe pour le moment. Réessaie dans un instant.");
+  }
+  await supabase.auth.signOut({ scope: "global" });
 }
 
 export async function verifyEmail(token: string): Promise<void> {
@@ -122,6 +155,10 @@ export async function resendVerification(): Promise<void> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user?.email) throw new ApiError(401, "not_authenticated", "Connecte-toi pour continuer.");
-  const { error } = await supabase.auth.resend({ type: "signup", email: user.email });
+  const { error } = await supabase.auth.resend({
+    type: "signup",
+    email: user.email,
+    options: { emailRedirectTo: authRedirectUrl("/verify-email") },
+  });
   if (error) throw mapSupabaseError(error);
 }

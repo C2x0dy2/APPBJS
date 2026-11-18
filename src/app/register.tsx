@@ -29,6 +29,7 @@ export default function RegisterScreen() {
   const [errors, setErrors] = useState<AuthFormErrors>({});
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [checkEmail, setCheckEmail] = useState(""); // adresse à confirmer avant la première connexion
 
   // Change UN champ en gardant les autres ; son message d'erreur disparaît dès qu'on le corrige.
   function updateField<K extends keyof RegisterForm>(field: K, value: RegisterForm[K]) {
@@ -46,8 +47,14 @@ export default function RegisterScreen() {
 
     setSubmitting(true);
     try {
-      // L'inscription connecte directement : on envoie la personne là où elle allait.
+      // L'inscription connecte directement : on envoie la personne là où elle allait. Sauf si le projet exige de
+      // confirmer l'adresse e-mail d'abord : pas de session, on l'invite à ouvrir le lien reçu.
       const user = await signUp(form);
+      if (!user) {
+        setCheckEmail(form.email.trim());
+        setSubmitting(false);
+        return;
+      }
       router.replace(safeRedirect(redirect) ?? homeFor(user));
     } catch (error) {
       if (error instanceof ApiError) {
@@ -59,6 +66,20 @@ export default function RegisterScreen() {
       }
       setSubmitting(false);
     }
+  }
+
+  if (checkEmail) {
+    return (
+      <AuthLayout title="Compte créé" subtitle="Plus qu'une étape avant de pouvoir te connecter.">
+        <Banner tone="success" title="Confirme ton adresse e-mail" style={styles.banner}>
+          {`On vient d'envoyer un lien à ${checkEmail}. Ouvre-le pour confirmer ton adresse, puis connecte-toi avec ton nom d'utilisateur.`}
+        </Banner>
+        <Button
+          title="Se connecter"
+          onPress={() => router.replace({ pathname: "/login", params: redirect ? { redirect } : {} })}
+        />
+      </AuthLayout>
+    );
   }
 
   return (

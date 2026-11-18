@@ -96,8 +96,9 @@ function RootNavigator({ backgroundColor, spinnerColor }: { backgroundColor: str
       <Stack.Screen name="login" />
       <Stack.Screen name="register" />
       <Stack.Screen name="forgot-password" />
+      <Stack.Screen name="verify-email/index" />
       <Stack.Screen name="verify-email/[token]" />
-      <Stack.Screen name="reset-password/[uid]/[token]" />
+      <Stack.Screen name="reset-password" />
       <Stack.Screen name="legal/[slug]" />
     </Stack>
   );

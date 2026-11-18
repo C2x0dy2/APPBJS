@@ -91,12 +91,19 @@ function TopBar(props: TabListProps) {
   );
 }
 
+// Les props d'onglet d'expo-router typent `key` et `ref` avec une autre copie des types React que celle de Pressable :
+// TypeScript refusait de les transmettre telles quelles (« Two different types with this name exist »). On les retire
+// seulement du TYPE : à l'exécution l'objet est transmis tel quel, `ref` compris.
+function pressableProps<T extends object>(props: T): Omit<T, 'key' | 'ref'> {
+  return props as Omit<T, 'key' | 'ref'>;
+}
+
 function TopTabButton({ tab, isFocused, children: _children, ...props }: TabTriggerSlotProps & { tab: TabConfig }) {
   const theme = useTheme();
 
   return (
     <Pressable
-      {...props}
+      {...pressableProps(props)}
       accessibilityRole="link"
       accessibilityState={{ selected: isFocused }}
       style={(state) => [
@@ -125,7 +132,7 @@ function BottomBar(props: TabListProps) {
 
 function BottomTabButton({ tab, isFocused, children: _children, ...props }: TabTriggerSlotProps & { tab: TabConfig }) {
   return (
-    <Pressable {...props} accessibilityRole="link" accessibilityState={{ selected: isFocused }} style={styles.bottomTab}>
+    <Pressable {...pressableProps(props)} accessibilityRole="link" accessibilityState={{ selected: isFocused }} style={styles.bottomTab}>
       <Icon name={tab.icon} size={24} color={isFocused ? 'primary' : 'textSecondary'} />
       <AppText variant="caption" color={isFocused ? 'primary' : 'textSecondary'} style={styles.bottomLabel}>
         {tab.label}

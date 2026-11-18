@@ -1,3 +1,6 @@
+import * as WebBrowser from "expo-web-browser";
+import { Platform } from "react-native";
+
 import { supabase } from "../lib/supabase";
 import { Event } from "../types/even";
 import { PendingOrderDetails, TicketDetails } from "../types/order";
@@ -142,21 +145,25 @@ export interface ReservationItem {
 }
 
 // Réserve des places : le serveur les bloque le temps du délai de paiement, puis les rend si rien n'est payé.
-// Refus possibles (ApiError.code) : "not_authenticated", "sold_out", "event_not_on_sale", "event_over".
+// Refus possibles (ApiError.code) : "not_authenticated", "email_not_verified", "sold_out", "event_not_on_sale",
+// "event_over", "too_many_tickets", "too_many_pending", "transfer_cap_exceeded" (voir 0017_securite_droits_et_limites.sql).
 export async function reserveTickets(
   eventId: string,
   items: ReservationItem[],
   paymentMethod: "card" | "transfer" = "card"
 ): Promise<PendingOrderDetails> {
-  const { error } = await supabase.rpc("reserve_seats_multi", {
+  const { data, error } = await supabase.rpc("reserve_seats_multi", {
     p_event_id: eventId,
     p_items: items.map((i) => ({ ticket_type_id: i.ticketTypeId, quantity: i.quantity })),
     p_payment_method: paymentMethod,
   });
   if (error) throw mapSupabaseError(error);
 
+  // On relit LA commande que le serveur vient de créer (son id), pas « la première en attente pour cet
+  // événement » : la personne peut en avoir déjà une autre.
+  const createdId = (data as { id?: string } | null)?.id;
   const pending = await getMyPendingOrders();
-  const order = pending.find((o) => o.order.eventId === eventId);
+  const order = pending.find((o) => (createdId ? o.order.id === createdId : o.order.eventId === eventId));
   if (!order) throw new ApiError(500, "server_error", "La réservation a été créée mais n'a pas pu être relue.");
   return order;
 }
@@ -164,10 +171,33 @@ export async function reserveTickets(
 // Ouvre le paiement Stripe d'une réservation par carte en attente ; renvoie l'URL de la page de
 // paiement à ouvrir dans un navigateur (expo-web-browser côté écran).
 export async function payOrder(orderId: string): Promise<{ url: string }> {
-  const returnUrl = typeof window !== "undefined" ? window.location.origin : undefined;
+  const returnUrl = checkoutReturnUrl();
   const { data, error } = await supabase.functions.invoke<{ url?: string; error?: string }>("create-checkout-session", {
     body: { order_id: orderId, success_url: returnUrl, cancel_url: returnUrl },
   });
   if (error || !data?.url) throw mapSupabaseError(error ?? new Error(data?.error ?? "checkout_failed"));
+  // On n'ouvre que la vraie page de paiement Stripe, jamais une autre adresse renvoyée par le serveur.
+  if (!data.url.startsWith("https://checkout.stripe.com/")) {
+    throw new ApiError(502, "server_error", "Le lien de paiement reçu n'est pas valide.");
+  }
   return { url: data.url };
+}
+
+// Où Stripe renvoie la personne après le paiement. Web : le tableau de bord du site. Téléphone : rien, le serveur
+// garde sa propre page de fin ; l'app relit la commande quand le navigateur se ferme. (Dans React Native, `window`
+// existe mais sans `location` : le lire directement faisait planter le bouton « Payer » sur téléphone.)
+function checkoutReturnUrl(): string | undefined {
+  if (Platform.OS !== "web" || typeof window === "undefined" || !window.location) return undefined;
+  return `${window.location.origin}/dashboard`;
+}
+
+// Ouvre la page de paiement. Web : dans le même onglet (un onglet ouvert après un appel réseau, et non directement
+// au clic, est bloqué par Safari). Téléphone : navigateur intégré, la promesse se termine quand il est fermé.
+export async function openCheckout(url: string): Promise<"left_app" | "closed"> {
+  if (Platform.OS === "web") {
+    window.location.assign(url);
+    return "left_app";
+  }
+  await WebBrowser.openBrowserAsync(url);
+  return "closed";
 }
