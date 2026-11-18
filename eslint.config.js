@@ -6,6 +6,7 @@ module.exports = defineConfig([
   expoConfig,
   {
     // supabase/functions tourne sous Deno (pas Node/React Native) : autre environnement, autres règles.
-    ignores: ["dist/*", "supabase/functions/**"],
+    // supabase/tests : scripts Node à part (leur propre package.json), pas du code de l'app.
+    ignores: ["dist/*", "supabase/functions/**", "supabase/tests/**"],
   }
 ]);

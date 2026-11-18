@@ -45,13 +45,27 @@ const KNOWN_CODES: Record<string, string> = {
   order_not_cancellable: "Cette commande ne peut plus être annulée.",
   transfer_not_available_this_close: "Le virement n'est plus disponible si proche de l'événement.",
   too_many_pending: "Tu as déjà plusieurs réservations en attente de paiement.",
+  // Ajoutés avec supabase/migrations/0017_securite_droits_et_limites.sql
+  too_many_tickets: "Trop de places pour une seule personne sur cet événement.",
+  email_not_verified: "Vérifie ton adresse e-mail avant de réserver.",
+  invalid_items: "Sélection de places invalide.",
+  mixed_currencies: "Ces places ne peuvent pas être réservées ensemble.",
+  transfer_cap_exceeded: "Plus de places disponibles par virement pour ce tarif.",
+  event_locked: "Cet événement est annulé ou terminé : il ne peut plus être modifié.",
+  use_cancel_event: "Utilise le bouton « Annuler l'événement » pour l'annuler.",
+  event_has_orders: "Des places ont déjà été réservées : l'événement ne peut plus redevenir un brouillon.",
+  capacity_below_sold: "Impossible de proposer moins de places que celles déjà vendues ou réservées.",
+  invalid_status: "Ce statut n'est pas autorisé ici.",
 };
 
 // Transforme n'importe quelle erreur Supabase (RPC, lecture de table, Auth) en ApiError, pour que tous les écrans
 // gèrent les refus de la même façon (voir ApiError ci-dessus).
 export function mapSupabaseError(error: unknown, fallback = "La demande a échoué."): ApiError {
   if (error instanceof ApiError) return error;
-  const raw = error instanceof Error ? error.message : String(error);
+  // Les erreurs de supabase-js ne sont pas toujours des instances d'Error (selon la version) : on lit `message`
+  // sur n'importe quel objet, sinon tous les refus de la base finiraient en message générique.
+  const message = (error as { message?: unknown } | null)?.message;
+  const raw = typeof message === "string" ? message : String(error);
   const [, code] = raw.match(/^([a-z_]+)(?::|$)/) ?? [];
   if (code && KNOWN_CODES[code]) return new ApiError(409, code, KNOWN_CODES[code]);
   return new ApiError(0, "server_error", fallback);

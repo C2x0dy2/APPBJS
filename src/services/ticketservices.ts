@@ -142,21 +142,25 @@ export interface ReservationItem {
 }
 
 // Réserve des places : le serveur les bloque le temps du délai de paiement, puis les rend si rien n'est payé.
-// Refus possibles (ApiError.code) : "not_authenticated", "sold_out", "event_not_on_sale", "event_over".
+// Refus possibles (ApiError.code) : "not_authenticated", "email_not_verified", "sold_out", "event_not_on_sale",
+// "event_over", "too_many_tickets", "too_many_pending", "transfer_cap_exceeded" (voir 0017_securite_droits_et_limites.sql).
 export async function reserveTickets(
   eventId: string,
   items: ReservationItem[],
   paymentMethod: "card" | "transfer" = "card"
 ): Promise<PendingOrderDetails> {
-  const { error } = await supabase.rpc("reserve_seats_multi", {
+  const { data, error } = await supabase.rpc("reserve_seats_multi", {
     p_event_id: eventId,
     p_items: items.map((i) => ({ ticket_type_id: i.ticketTypeId, quantity: i.quantity })),
     p_payment_method: paymentMethod,
   });
   if (error) throw mapSupabaseError(error);
 
+  // On relit LA commande que le serveur vient de créer (son id), pas « la première en attente pour cet
+  // événement » : la personne peut en avoir déjà une autre.
+  const createdId = (data as { id?: string } | null)?.id;
   const pending = await getMyPendingOrders();
-  const order = pending.find((o) => o.order.eventId === eventId);
+  const order = pending.find((o) => (createdId ? o.order.id === createdId : o.order.eventId === eventId));
   if (!order) throw new ApiError(500, "server_error", "La réservation a été créée mais n'a pas pu être relue.");
   return order;
 }
