@@ -16,8 +16,7 @@ export interface EventImage {
     sources: { width: number; url: string }[]; // de la plus petite à la plus grande
 }
 
-// Un événement, tel que le renvoie le serveur (backend/ticketing/serialisation.py). Un test compare ce fichier à la
-// réponse réelle : si l'un change sans l'autre, il échoue.
+// Un événement, tel que le renvoie l'API (GET /events/ et GET /organizer/events/).
 export interface Event {
     id: string;
     collectiveId: string; // le collectif organisateur : un organisateur ne voit que les siens

@@ -1,5 +1,5 @@
 // Vérifications des formulaires de connexion et d'inscription, avant tout envoi au serveur.
-// Mêmes règles que le serveur Django (nom d'utilisateur, mot de passe) : le serveur revérifie toujours,
+// Mêmes règles que le serveur (nom d'utilisateur, mot de passe) : le serveur revérifie toujours,
 // ces contrôles servent seulement à donner une réponse immédiate à la personne.
 
 export type AuthFormErrors = Record<string, string>;
