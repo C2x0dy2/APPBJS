@@ -59,5 +59,6 @@ const styles = StyleSheet.create({
   },
   action: {
     marginTop: 20,
+    alignSelf: 'center', // le bouton à largeur automatique se colle à gauche par défaut : on le recentre
   },
 });
