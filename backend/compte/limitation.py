@@ -1,5 +1,5 @@
 """
-Limitation des tentatives de connexion (protection contre la force brute).
+Limitation des tentatives (connexion, inscription, demande de nouveau mot de passe) : protection contre la force brute.
 
 On compte les ÉCHECS par couple (adresse IP, nom d'utilisateur) dans le cache Django. Une fois le maximum
 atteint, les tentatives suivantes sont refusées jusqu'à la fin de la fenêtre, même avec le bon mot
@@ -33,10 +33,12 @@ def _fenetre_secondes():
     return settings.CONNEXION_FENETRE_MINUTES * 60
 
 
-def minutes_restantes(request, identifiant):
-    """0 si la connexion est autorisée, sinon le nombre de minutes (arrondi au-dessus) avant de pouvoir réessayer."""
+def minutes_restantes(request, identifiant, maximum=None):
+    """0 si l'action est autorisée, sinon le nombre de minutes (arrondi au-dessus) avant de pouvoir réessayer.
+    `maximum` : nombre de tentatives tolérées dans la fenêtre (par défaut CONNEXION_TENTATIVES_MAX)."""
+    maximum = settings.CONNEXION_TENTATIVES_MAX if maximum is None else maximum
     cle_n, cle_fin = _cles(request, identifiant)
-    if (cache.get(cle_n) or 0) < settings.CONNEXION_TENTATIVES_MAX:
+    if (cache.get(cle_n) or 0) < maximum:
         return 0
     reste = (cache.get(cle_fin) or 0) - time.time()
     return max(1, math.ceil(reste / 60)) if reste > 0 else 0

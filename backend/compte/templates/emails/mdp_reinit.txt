@@ -2,9 +2,9 @@
 
 {% translate "Tu as demandé à changer ton mot de passe. Ouvre ce lien pour en choisir un nouveau :" %}
 
-{{ protocol }}://{{ domain }}{% url 'compte:mdp_nouveau' uidb64=uid token=token %}
+{{ lien }}
 
-{% blocktranslate with nom=user.get_username %}Pour rappel, ton nom d'utilisateur est : {{ nom }}{% endblocktranslate %}
+{% blocktranslate %}Pour rappel, ton nom d'utilisateur est : {{ nom_utilisateur }}{% endblocktranslate %}
 
 {% translate "Si tu n'as rien demandé, ignore ce message : ton mot de passe ne change pas." %}
 {% if signature %}

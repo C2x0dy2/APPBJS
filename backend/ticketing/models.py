@@ -34,8 +34,13 @@ def fuseau_par_defaut():
     return settings.TIME_ZONE
 
 
+def devise_par_defaut():
+    return settings.DEVISE_PAR_DEFAUT
+
+
 valider_logo = FileExtensionValidator(['svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico'])   # le SVG est accepté (ImageField le refuserait)
 valider_couleur = RegexValidator(r'^#[0-9a-fA-F]{6}$', _('Couleur au format #RRGGBB (ex. #5a1b9e).'))
+valider_code_devise = RegexValidator(r'^[A-Za-z]{3}$', _('Code de monnaie à 3 lettres (ex. EUR, XOF).'))
 
 
 def exiger_alt(instance, champ_image, champ_alt):
@@ -339,8 +344,12 @@ class ImageLieu(models.Model):
 
 
 class EvenementQuerySet(models.QuerySet):
+    def publics(self):
+        """Ce que le public peut voir : publié et non annulé."""
+        return self.filter(publie=True, annule=False)
+
     def publies_a_venir(self, maintenant=None):
-        return self.filter(publie=True, debut__gt=maintenant or timezone.now())
+        return self.publics().filter(debut__gt=maintenant or timezone.now())
 
 
 class Evenement(models.Model):
@@ -351,6 +360,8 @@ class Evenement(models.Model):
     categorie = models.ForeignKey(Categorie, null=True, blank=True, on_delete=models.SET_NULL, related_name='evenements', verbose_name=_('catégorie'))
     lieu = models.ForeignKey(Lieu, null=True, blank=True, on_delete=models.SET_NULL, related_name='evenements', verbose_name=_('lieu'))
     est_en_ligne = models.BooleanField(_('événement en ligne'), default=False)
+    lieu_texte = models.CharField(_('lieu (texte libre)'), max_length=200, blank=True,
+                                  help_text=_("Utilisé quand aucun lieu n'est choisi dans la liste : c'est ce que saisit un organisateur depuis l'application."))
     description = models.TextField(_('description'), blank=True)
     image_principale = models.ImageField(_('image principale'), upload_to='evenements/', blank=True, validators=[valider_image],
                                          width_field='image_principale_largeur', height_field='image_principale_hauteur')
@@ -359,9 +370,16 @@ class Evenement(models.Model):
     image_principale_hauteur = models.PositiveIntegerField(null=True, blank=True, editable=False)
     debut = models.DateTimeField(_('début'), help_text=_("Saisi dans le fuseau horaire de l'administrateur, stocké en UTC."))
     fuseau_horaire = models.CharField(_('fuseau horaire du lieu'), max_length=64, default=fuseau_par_defaut, validators=[valider_fuseau])
+    ouverture_portes = models.TimeField(_("heure d'ouverture des portes"), null=True, blank=True,
+                                        help_text=_("Heure locale, dans le fuseau horaire de l'événement. Vide : non communiquée."))
     date_limite_annulation = models.DateTimeField(_("date limite d'annulation"), null=True, blank=True,
                                                   help_text=_("Vide : on utilise le délai par défaut des paramètres du site."))
+    devise = models.CharField(_('monnaie (code à 3 lettres)'), max_length=3, default=devise_par_defaut, validators=[valider_code_devise],
+                              help_text=_("EUR, XOF, USD… Les prix de l'événement sont saisis en centièmes de cette monnaie "
+                                          "(2500 = 25,00 ; en XOF, 500000 = 5 000)."))
     publie = models.BooleanField(_('publié'), default=False)
+    annule = models.BooleanField(_('annulé'), default=False,
+                                 help_text=_("Un événement annulé n'est plus en vente ; ses billets sont annulés et les paiements reçus sont à rembourser."))
     a_la_une = models.BooleanField(_('à la une'), default=False)
 
     objects = EvenementQuerySet.as_manager()
@@ -380,6 +398,7 @@ class Evenement(models.Model):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = _slug_unique(Evenement, self.titre, self)
+        self.devise = (self.devise or '').strip().upper() or devise_par_defaut().upper()   # toujours « EUR », jamais « eur »
         super().save(*args, **kwargs)
 
     @property
@@ -387,11 +406,16 @@ class Evenement(models.Model):
         """Début dans le fuseau horaire du lieu."""
         return self.debut.astimezone(ZoneInfo(self.fuseau_horaire))
 
-    @property
-    def limite_annulation(self):
+    def calculer_limite_annulation(self, parametres):
+        """Instant limite d'annulation. `parametres` est passé par l'appelant : pour une liste d'événements,
+        on lit les paramètres du site une seule fois au lieu d'une fois par événement."""
         if self.date_limite_annulation:
             return self.date_limite_annulation
-        return self.debut - timedelta(hours=ParametresSite.charger().delai_annulation_defaut_heures)
+        return self.debut - timedelta(hours=parametres.delai_annulation_defaut_heures)
+
+    @property
+    def limite_annulation(self):
+        return self.calculer_limite_annulation(ParametresSite.charger())
 
 
 class ImageEvenement(models.Model):
@@ -436,11 +460,16 @@ class TypePlace(models.Model):
     def disponibles(self):
         return self.capacite - self.vendues - self.retenues
 
-    def prix_a(self, quand, tarifs=None):
-        """Prix en vigueur : le tarif « early » le plus proche encore valide, sinon le prix normal."""
+    def tarif_en_vigueur(self, quand, tarifs=None):
+        """Le tarif « early » le plus proche encore valide à cet instant, ou None s'il n'y en a plus."""
         tarifs = self.tarifs.all() if tarifs is None else tarifs
         valides = [t for t in tarifs if t.valide_jusqua > quand]
-        return min(valides, key=lambda t: t.valide_jusqua).prix_centimes if valides else self.prix_base_centimes
+        return min(valides, key=lambda t: t.valide_jusqua) if valides else None
+
+    def prix_a(self, quand, tarifs=None):
+        """Prix en vigueur : le tarif « early » le plus proche encore valide, sinon le prix normal."""
+        tarif = self.tarif_en_vigueur(quand, tarifs)
+        return tarif.prix_centimes if tarif else self.prix_base_centimes
 
     def __str__(self):
         return f'{self.evenement} – {self.nom}'
@@ -469,6 +498,8 @@ class Commande(models.Model):
     STATUTS = [(EN_ATTENTE, _('En attente')), (PAYEE, _('Payée')), (EXPIREE, _('Expirée')), (ANNULEE, _('Annulée'))]
 
     evenement = models.ForeignKey(Evenement, on_delete=models.PROTECT, related_name='commandes', verbose_name=_('événement'))
+    utilisateur = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='commandes',
+                                    verbose_name=_('compte'), help_text=_("Le compte connecté qui a réservé (vide pour une commande passée sans compte)."))
     email = models.EmailField(_('e-mail'))
     statut = models.CharField(_('statut'), max_length=10, choices=STATUTS, default=EN_ATTENTE, db_index=True)
     moyen_paiement = models.CharField(_('moyen de paiement'), max_length=10, default='carte')
@@ -477,7 +508,7 @@ class Commande(models.Model):
     expire_le = models.DateTimeField(_('expire le'), db_index=True)
     payee_le = models.DateTimeField(_('payée le'), null=True, blank=True)
     a_rembourser = models.BooleanField(_('à rembourser'), default=False,
-                                       help_text=_("Paiement reçu après expiration, alors qu'il n'y avait plus de place."))
+                                       help_text=_("Paiement reçu après expiration alors qu'il n'y avait plus de place, ou événement annulé : l'argent est à rendre."))
 
     class Meta:
         verbose_name = _('commande')
@@ -510,6 +541,31 @@ class Billet(models.Model):
         verbose_name_plural = _('billets')
         # Garde-fou : un paiement rejoué ne peut pas créer un second billet.
         constraints = [models.UniqueConstraint(fields=['commande', 'numero'], name='un_numero_par_commande')]
+
+
+def echeance_jeton():
+    return timezone.now() + timedelta(days=settings.JETON_DUREE_JOURS)
+
+
+class JetonApi(models.Model):
+    """Jeton d'accès de l'application (en-tête « Authorization: Bearer … »).
+
+    On ne garde que son EMPREINTE (SHA-256) : le jeton lui-même n'est montré qu'une fois, à la connexion. Même si la base
+    fuitait, personne ne pourrait s'en servir. Supprimer la ligne = déconnecter l'appareil."""
+    utilisateur = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='jetons', verbose_name=_('compte'))
+    empreinte = models.CharField(max_length=64, unique=True)
+    cree_le = models.DateTimeField(_('créé le'), auto_now_add=True)
+    expire_le = models.DateTimeField(_('expire le'), default=echeance_jeton)
+    derniere_utilisation = models.DateTimeField(_('dernière utilisation'), null=True, blank=True)
+    appareil = models.CharField(_('appareil'), max_length=120, blank=True)
+
+    class Meta:
+        verbose_name = _("jeton d'accès (application)")
+        verbose_name_plural = _("jetons d'accès (application)")
+        ordering = ['-cree_le']
+
+    def __str__(self):
+        return f'{self.utilisateur} · {self.cree_le:%d/%m/%Y %H:%M}'
 
 
 class NotificationPaiement(models.Model):

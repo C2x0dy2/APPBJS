@@ -1,45 +1,90 @@
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { Link, router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { StyleSheet, View } from "react-native";
 
+import { StatusBadge } from "@/components/event-card";
+import { EventHero } from "@/components/event-hero";
+import { EventImageEditor } from "@/components/event-image-editor";
 import { EventInfo } from "@/components/event-info";
-import { useAuth } from "@/context/auth";
-import { cancelEvent, deleteEvent, getEventById, getTicketTypes } from "@/services/evenservices";
+import { AppText } from "@/components/ui/app-text";
+import { Banner } from "@/components/ui/banner";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ProgressBar } from "@/components/ui/progress-bar";
+import { Screen, SCREEN_PADDING } from "@/components/ui/screen";
+import { LoadBoundary } from "@/components/ui/state";
+import { ContentWidth, Radius } from "@/constants/theme";
+import { useLoad } from "@/hooks/use-load";
+import { useTheme } from "@/hooks/use-theme";
+import { errorMessage } from "@/services/api";
+import { cancelEvent, deleteEvent, getEventStats, getOrganizerEvent, getOrganizerTicketTypes } from "@/services/organizerservices";
 import { Event } from "@/types/even";
-import { TicketType } from "@/types/ticket";
+import { EventStats } from "@/types/organizer";
+import { OrganizerTicketType } from "@/types/ticket";
 import { confirmAction } from "@/utils/confirm";
+import { formatNumber, formatPercent, formatPrice } from "@/utils/format";
 
-// Détail côté ORGANISATEUR : mêmes infos que l'acheteur + les actions de gestion.
+type EventData = { event: Event; tickets: OrganizerTicketType[]; stats: EventStats | null } | null; // null : introuvable
+
+// Détail côté ORGANISATEUR : mêmes infos que l'acheteur + les chiffres de vente et les actions de gestion.
 export default function OrganizerEventScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { user } = useAuth();
 
-  const [event, setEvent] = useState<Event | null>(); // undefined = chargement, null = introuvable
-  const [tickets, setTickets] = useState<TicketType[]>([]);
+  // Cloisonnement : le serveur répond « introuvable » pour l'événement d'un autre collectif, comme s'il n'existait pas.
+  const load = useCallback(async (): Promise<EventData> => {
+    const event = await getOrganizerEvent(id);
+    if (!event) return null;
+    // Un brouillon n'a aucune vente à montrer.
+    const [tickets, stats] = await Promise.all([getOrganizerTicketTypes(id), event.status === "draft" ? null : getEventStats(id)]);
+    return { event, tickets, stats };
+  }, [id]);
+  const state = useLoad(load);
 
-  // useCallback : "load" reste la même fonction tant que id et le collectif ne changent pas.
-  const load = useCallback(() => {
-    getEventById(id).then((found) => {
-      // Cloisonnement : l'événement d'un autre collectif est traité comme introuvable.
-      const isMine = found && found.collectiveId === user?.collectiveId;
-      // { ...found } : nouvelle copie, pour que React voie le changement après une modification.
-      setEvent(isMine ? { ...found } : null);
-    });
-    getTicketTypes(id).then(setTickets);
-  }, [id, user?.collectiveId]);
+  return (
+    <LoadBoundary state={state}>
+      {(data) =>
+        data === null ? (
+          <Screen>
+            <EmptyState
+              icon="calendar"
+              title="Événement introuvable"
+              message="Cet événement n'existe pas, ou il appartient à un autre collectif."
+              actionLabel="Mes événements"
+              onAction={() => router.replace("/organizer")}
+            />
+          </Screen>
+        ) : (
+          <OrganizerEvent event={data.event} tickets={data.tickets} stats={data.stats} onChanged={state.reload} />
+        )
+      }
+    </LoadBoundary>
+  );
+}
 
-  // Rechargé à chaque retour sur l'écran, par exemple après "Modifier".
-  useFocusEffect(load);
+type OrganizerEventProps = { event: Event; tickets: OrganizerTicketType[]; stats: EventStats | null; onChanged: () => void };
+
+function OrganizerEvent({ event, tickets, stats, onChanged }: OrganizerEventProps) {
+  const theme = useTheme();
+  const [problem, setProblem] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function handleCancel() {
     const ok = await confirmAction(
       "Annuler l'événement ?",
-      "Il ne sera plus visible par les acheteurs. Cette action est définitive.",
+      "Plus aucune place ne sera vendue, les billets déjà émis seront annulés et les paiements reçus seront à rembourser. Cette action est définitive.",
       "Annuler l'événement"
     );
     if (!ok) return;
-    await cancelEvent(id);
-    load();
+    setBusy(true);
+    setProblem("");
+    try {
+      await cancelEvent(event.id);
+      onChanged();
+    } catch (error) {
+      setProblem(errorMessage(error, "L'annulation a échoué. Réessaie."));
+    }
+    setBusy(false);
   }
 
   async function handleDelete() {
@@ -49,12 +94,18 @@ export default function OrganizerEventScreen() {
       "Supprimer"
     );
     if (!ok) return;
-    await deleteEvent(id);
-    router.back();
+    setBusy(true);
+    setProblem("");
+    try {
+      await deleteEvent(event.id);
+      // Arrivé par un lien direct, il n'y a pas d'écran précédent : on retourne à la liste des événements.
+      if (router.canGoBack()) router.back();
+      else router.replace("/organizer");
+    } catch (error) {
+      setProblem(errorMessage(error, "La suppression a échoué. Réessaie."));
+      setBusy(false);
+    }
   }
-
-  if (event === undefined) return <Text style={styles.message}>Chargement…</Text>;
-  if (event === null) return <Text style={styles.message}>Événement introuvable.</Text>;
 
   // Quelles actions selon le statut :
   //   brouillon         -> Modifier, Supprimer (rien n'a été vendu)
@@ -65,82 +116,141 @@ export default function OrganizerEventScreen() {
   const canCancel = event.status === "on_sale" || event.status === "sold_out";
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <EventInfo event={event} tickets={tickets} />
+    <Screen scroll padded={false} topInset={false} maxWidth={ContentWidth.content}>
+      <EventHero event={event} />
 
-      <View style={styles.actions}>
-        {canEdit && (
-          <Link href={{ pathname: "/organizer/event/edit/[id]", params: { id: event.id } }} asChild>
-            <Pressable style={styles.button}>
-              <Text style={styles.buttonText}>Modifier</Text>
-            </Pressable>
-          </Link>
+      <View style={[styles.sheet, { backgroundColor: theme.background }]}>
+        <View style={styles.badges}>
+          <StatusBadge status={event.status} />
+        </View>
+        <AppText variant="h1" style={styles.title} accessibilityRole="header">
+          {event.name}
+        </AppText>
+
+        {event.status === "canceled" && (
+          <Banner tone="warning" title="Événement annulé" style={styles.banner}>
+            Les billets sont annulés. Les paiements déjà reçus sont à rembourser : le tableau de bord en donne le total.
+          </Banner>
         )}
 
-        {canDelete && (
-          <Pressable style={styles.dangerButton} onPress={handleDelete}>
-            <Text style={styles.dangerButtonText}>Supprimer le brouillon</Text>
-          </Pressable>
+        {/* Un résumé des ventes, avec un lien vers le tableau de bord complet. */}
+        {stats && (
+          <Card style={styles.sales} padding={16}>
+            <View style={styles.salesTop}>
+              <View>
+                <AppText variant="caption" color="textSecondary">
+                  Places vendues
+                </AppText>
+                <AppText variant="h2">
+                  {formatNumber(stats.totals.sold)} / {formatNumber(stats.totals.capacity)}
+                </AppText>
+              </View>
+              <View style={styles.salesRight}>
+                <AppText variant="caption" color="textSecondary">
+                  Argent encaissé
+                </AppText>
+                <AppText variant="h2" color="success">
+                  {formatPrice(stats.totals.revenue, event.currency)}
+                </AppText>
+              </View>
+            </View>
+            <ProgressBar
+              total={stats.totals.capacity}
+              segments={[
+                { value: stats.totals.sold, color: theme.primary },
+                { value: stats.totals.held, color: theme.warning },
+              ]}
+            />
+            <AppText variant="caption" color="textSecondary" style={styles.salesNote}>
+              {formatPercent(stats.totals.fillRate)} de remplissage
+            </AppText>
+            <Button
+              title="Voir le tableau de bord"
+              icon="chart"
+              variant="secondary"
+              size="md"
+              onPress={() => router.navigate({ pathname: "/organizer/dashboard", params: { eventId: event.id } })}
+              style={styles.salesButton}
+            />
+          </Card>
         )}
 
-        {canCancel && (
-          <Pressable style={styles.dangerButton} onPress={handleCancel}>
-            <Text style={styles.dangerButtonText}>Annuler l’événement</Text>
-          </Pressable>
-        )}
+        <EventInfo event={event} tickets={tickets} showCapacity />
 
-        {!canEdit && <Text style={styles.message}>Cet événement ne peut plus être modifié.</Text>}
+        {canEdit && <EventImageEditor event={event} onChanged={onChanged} />}
+
+        <View style={styles.actions}>
+          {problem !== "" && <Banner tone="danger">{problem}</Banner>}
+
+          {canEdit && (
+            <Button
+              title="Modifier"
+              icon="edit"
+              onPress={() => router.push({ pathname: "/organizer/event/edit/[id]", params: { id: event.id } })}
+              disabled={busy}
+            />
+          )}
+
+          {canDelete && <Button title="Supprimer le brouillon" icon="trash" variant="danger" onPress={handleDelete} loading={busy} />}
+
+          {canCancel && <Button title="Annuler l'événement" icon="close" variant="danger" onPress={handleCancel} loading={busy} />}
+
+          {!canEdit && <Banner tone="info">Cet événement ne peut plus être modifié.</Banner>}
+        </View>
       </View>
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
+  sheet: {
+    marginTop: -28,
+    paddingHorizontal: SCREEN_PADDING,
+    paddingTop: 24,
+    paddingBottom: 16,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
   },
 
-  content: {
-    padding: 20,
-    paddingBottom: 40,
+  badges: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
   },
 
-  message: {
-    padding: 20,
-    fontSize: 16,
-    color: "#666",
+  title: {
+    marginBottom: 20,
+  },
+
+  banner: {
+    marginBottom: 20,
+  },
+
+  sales: {
+    marginBottom: 24,
+  },
+
+  salesTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginBottom: 14,
+  },
+
+  salesRight: {
+    alignItems: "flex-end",
+  },
+
+  salesNote: {
+    marginTop: 8,
+  },
+
+  salesButton: {
+    marginTop: 14,
   },
 
   actions: {
-    marginTop: 20,
+    marginTop: 24,
     gap: 12,
-  },
-
-  button: {
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: "#000",
-  },
-
-  buttonText: {
-    color: "#fff",
-    textAlign: "center",
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-
-  dangerButton: {
-    padding: 15,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#c62828",
-  },
-
-  dangerButtonText: {
-    color: "#c62828",
-    textAlign: "center",
-    fontSize: 16,
-    fontWeight: "bold",
   },
 });

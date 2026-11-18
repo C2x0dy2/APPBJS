@@ -1,59 +1,53 @@
 """
 Contrôle d'accès de l'espace organisateur : UN seul endroit décide qui entre.
 
-Une vue protégée reçoit le slug de l'organisation dans l'adresse (/orga/<slug>/…). Le décorateur
-(ou le mixin) charge l'organisation, vérifie que l'utilisateur en est membre avec un rôle
-autorisé, puis place `request.organisation` et `request.membre`. Dans TOUS les autres cas
-(organisation inconnue, inactive, utilisateur anonyme, non membre, mauvais rôle) la réponse
-est la même 404 : on ne révèle pas qu'une organisation existe.
+Un collectif (Organisation) ne voit que ses données. Un utilisateur appartient à un collectif par une fiche Membre,
+avec un rôle (administrateur, gestionnaire, contrôleur). Dans TOUS les cas d'échec (collectif inconnu, inactif,
+utilisateur non membre, mauvais rôle, événement d'un autre collectif) la réponse est la même 404 : on ne révèle pas
+qu'un collectif ou un événement existe.
 
-Règle pour les vues : ne jamais lire les données par identifiant seul. Toujours partir de
-`evenements_de(request)` ou filtrer par `request.organisation`.
+Règle pour les vues : ne jamais lire un événement par son identifiant seul. Toujours passer par `evenement_gere()`
+ou par `evenements_de(organisation)`.
 """
-from functools import wraps
-
-from django.http import Http404
-
+from .api_commun import NonTrouve, identifiant_entier
 from .models import Evenement, Membre, Organisation
 
 TOUS_LES_ROLES = tuple(role for role, _libelle in Membre.ROLES)
 ROLES_GESTION = (Membre.ADMIN, Membre.GESTIONNAIRE)   # tout sauf le scanner seul
 
 
-def _resoudre_organisation(request, slug, roles):
-    """Place request.organisation / request.membre, ou lève une 404 identique dans tous les cas d'échec."""
-    organisation = Organisation.objects.filter(slug=slug, actif=True).first()
-    membre = None
-    if organisation is not None and request.user.is_authenticated:
-        membre = Membre.objects.filter(utilisateur=request.user, organisation=organisation, role__in=roles).first()
-    if membre is None:
-        raise Http404
-    request.organisation, request.membre = organisation, membre
+def collectifs_geres(utilisateur, roles=ROLES_GESTION):
+    """Les collectifs actifs que cette personne gère, dans un ordre stable."""
+    return (Organisation.objects.filter(actif=True, membres__utilisateur=utilisateur, membres__role__in=roles)
+            .distinct().order_by('nom', 'pk'))
 
 
-def organisation_requise(roles=None):
-    """Décorateur : @organisation_requise(roles=[Membre.ADMIN, Membre.GESTIONNAIRE]).
-    Sans `roles`, tous les rôles sont acceptés."""
-    autorises = tuple(roles) if roles else TOUS_LES_ROLES
-
-    def decorateur(vue):
-        @wraps(vue)
-        def enveloppe(request, *args, slug, **kwargs):
-            _resoudre_organisation(request, slug, autorises)
-            return vue(request, *args, **kwargs)
-        return enveloppe
-    return decorateur
-
-
-class OrganisationRequiseMixin:
-    """Équivalent pour les vues à base de classes : class MaVue(OrganisationRequiseMixin, View): roles = [...]"""
-    roles = None
-
-    def dispatch(self, request, *args, **kwargs):
-        _resoudre_organisation(request, kwargs.pop('slug'), tuple(self.roles) if self.roles else TOUS_LES_ROLES)
-        return super().dispatch(request, *args, **kwargs)
+def collectif_courant(utilisateur, id_demande=None, roles=ROLES_GESTION):
+    """Le collectif sur lequel la personne travaille : celui qu'elle demande (s'il en fait partie), sinon son premier.
+    404 si elle n'en gère aucun ou si celui demandé n'est pas le sien."""
+    collectifs = collectifs_geres(utilisateur, roles)
+    if id_demande not in (None, ''):
+        pk = identifiant_entier(id_demande)
+        collectif = collectifs.filter(pk=pk).first() if pk is not None else None
+    else:
+        collectif = collectifs.first()
+    if collectif is None:
+        raise NonTrouve()
+    return collectif
 
 
-def evenements_de(request):
-    """Les événements de l'organisation courante, et eux seuls. Point de départ obligatoire des requêtes."""
-    return Evenement.objects.filter(organisation=request.organisation)
+def evenements_de(organisation):
+    """Les événements du collectif, et eux seuls. Point de départ obligatoire des requêtes."""
+    return Evenement.objects.filter(organisation=organisation)
+
+
+def evenement_gere(utilisateur, evenement_id, roles=ROLES_GESTION):
+    """L'événement s'il appartient à un collectif géré par cette personne, sinon 404 (même réponse partout)."""
+    pk = identifiant_entier(evenement_id)
+    if pk is None:
+        raise NonTrouve()
+    evenement = (Evenement.objects.filter(pk=pk, organisation__in=collectifs_geres(utilisateur, roles))
+                 .select_related('organisation', 'lieu').first())
+    if evenement is None:
+        raise NonTrouve()
+    return evenement

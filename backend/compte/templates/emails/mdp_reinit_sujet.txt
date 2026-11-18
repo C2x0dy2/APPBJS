@@ -1,1 +1,0 @@
-{% load i18n %}{% autoescape off %}{% translate "Réinitialisation de ton mot de passe" %}{% endautoescape %}

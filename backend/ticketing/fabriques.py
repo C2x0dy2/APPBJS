@@ -16,10 +16,11 @@ def creer_organisation(nom='Collectif A'):
 
 
 def creer_evenement(organisation=None, titre='Événement test', jours=30, capacite=10, prix=2000, publie=True,
-                    nom_place='Standard', **extra):
+                    nom_place='Standard', debut=None, **extra):
+    """`debut` (instant précis) l'emporte sur `jours` (décalage depuis maintenant) quand un test a besoin d'une date fixe."""
     organisation = organisation or creer_organisation()
     evenement = Evenement.objects.create(
-        organisation=organisation, titre=titre, debut=timezone.now() + timedelta(days=jours), publie=publie, **extra)
+        organisation=organisation, titre=titre, debut=debut or timezone.now() + timedelta(days=jours), publie=publie, **extra)
     type_place = TypePlace.objects.create(evenement=evenement, nom=nom_place, capacite=capacite, prix_base_centimes=prix)
     return evenement, type_place
 
@@ -50,3 +51,9 @@ def creer_image(nom='photo.jpg', largeur=1200, hauteur=800, format='JPEG', coule
     tampon = io.BytesIO()
     image.save(tampon, format, **options)
     return SimpleUploadedFile(nom, tampon.getvalue(), content_type=f'image/{format.lower()}')
+
+
+def en_tete_auth(utilisateur):
+    """En-têtes d'une requête de l'application connectée en tant que `utilisateur` : client.get(url, headers=en_tete_auth(u))."""
+    from .jetons import creer_jeton
+    return {'Authorization': f'Bearer {creer_jeton(utilisateur)}'}

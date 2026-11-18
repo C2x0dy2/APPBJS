@@ -11,7 +11,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
-from .models import Billet, Commande, LigneCommande, NotificationPaiement, TypePlace
+from .models import Billet, Commande, Evenement, LigneCommande, NotificationPaiement, TypePlace
 
 
 class PlusDePlaces(Exception):
@@ -36,8 +36,8 @@ def _vendre(type_place_id, quantite):
 
 
 @transaction.atomic
-def reserver(evenement, email, lignes, moyen_paiement='carte', maintenant=None):
-    """lignes : [(type_place_id, quantité)].
+def reserver(evenement, email, lignes, moyen_paiement='carte', maintenant=None, utilisateur=None):
+    """lignes : [(type_place_id, quantité)]. `utilisateur` : le compte qui réserve (pour retrouver ses billets).
 
     Lève PlusDePlaces sans rien retenir si une catégorie manque de places.
     """
@@ -46,7 +46,7 @@ def reserver(evenement, email, lignes, moyen_paiement='carte', maintenant=None):
     for type_id, quantite in lignes:
         voulu[type_id] += quantite
     commande = Commande.objects.create(
-        evenement=evenement, email=email, moyen_paiement=moyen_paiement,
+        evenement=evenement, email=email, moyen_paiement=moyen_paiement, utilisateur=utilisateur,
         expire_le=maintenant + timedelta(minutes=settings.DUREES_RETENUE_MINUTES[moyen_paiement]),
     )
     total = 0
@@ -78,6 +78,21 @@ def liberer_retenues_expirees(maintenant=None):
     return compteur
 
 
+@transaction.atomic
+def annuler_evenement(evenement):
+    """Annule un événement. Plus aucune vente ; les réservations en attente sont annulées (leurs places sont rendues) ;
+    les billets sont annulés et les commandes payées marquées « à rembourser ». Idempotent."""
+    Evenement.objects.filter(pk=evenement.pk).update(annule=True)
+    for commande_id in list(Commande.objects.filter(evenement=evenement, statut=Commande.EN_ATTENTE).values_list('pk', flat=True)):
+        # transition conditionnelle : si un paiement arrive au même moment, un seul des deux gagne
+        if Commande.objects.filter(pk=commande_id, statut=Commande.EN_ATTENTE).update(statut=Commande.ANNULEE):
+            for ligne in LigneCommande.objects.filter(commande_id=commande_id):
+                _relacher(ligne.type_place_id, ligne.quantite)
+    Billet.objects.filter(commande__evenement=evenement, statut=Billet.VALIDE).update(statut=Billet.ANNULE)
+    Commande.objects.filter(evenement=evenement, statut=Commande.PAYEE).update(a_rembourser=True)
+    evenement.annule = True
+
+
 def _emettre_billets(commande):
     numero = 0
     for ligne in commande.lignes.select_related('type_place'):
@@ -96,9 +111,14 @@ def confirmer_paiement(id_fournisseur, commande_id, montant_centimes, maintenant
         with transaction.atomic():
             NotificationPaiement.objects.create(
                 id_fournisseur=id_fournisseur, commande_id=commande_id, montant_centimes=montant_centimes)
-            commande = Commande.objects.select_for_update().get(pk=commande_id)
+            commande = Commande.objects.select_for_update().select_related('evenement').get(pk=commande_id)
             if commande.statut == Commande.PAYEE:
                 return 'duplicate'   # autre notification pour la même commande
+            if commande.evenement.annule:
+                # L'événement a été annulé entre la réservation et le paiement : pas de billet, l'argent est à rendre.
+                commande.a_rembourser = True
+                commande.save(update_fields=['a_rembourser'])
+                return 'late'
             lignes = list(commande.lignes.all())
             if commande.statut != Commande.EN_ATTENTE:
                 # Retenue déjà libérée : on ne reprend les places que s'il en reste.

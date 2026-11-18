@@ -6,6 +6,7 @@ Les secrets et les réglages d'environnement viennent du fichier .env (non versi
 """
 import json
 import os
+import re
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -55,10 +56,11 @@ INSTALLED_APPS = [
     'compte',
 ]
 
-AUTH_USER_MODEL = 'ticketing.Utilisateur'   # connexion par e-mail
+AUTH_USER_MODEL = 'ticketing.Utilisateur'   # connexion par nom d'utilisateur
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'ticketing.cors.CorsApiMiddleware',   # en-têtes CORS de l'API /api/v1/ uniquement (voir CORS_ORIGINES_AUTORISEES)
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -80,8 +82,6 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'ticketing.context.site',
-                'compte.context.verification',
             ],
         },
     },
@@ -113,9 +113,8 @@ TIME_ZONE = 'Europe/Paris'     # fuseau d'affichage par défaut ; les dates sont
 USE_I18N = True
 USE_TZ = True
 
-# --- Fichiers statiques (CSS, JS, polices) et médias (images téléversées dans l'admin) ---
+# --- Fichiers statiques (ceux de l'administration Django) et médias (images téléversées) ---
 STATIC_URL = 'static/'
-STATICFILES_DIRS = [BASE_DIR / 'assets']
 MEDIA_URL = env('MEDIA_URL', 'media/')
 MEDIA_ROOT = BASE_DIR / env('MEDIA_DIR', 'media')
 
@@ -169,27 +168,47 @@ DUREES_RETENUE_MINUTES = {
     'virement': env_int('RETENUE_VIREMENT_MINUTES', 48 * 60),
 }
 MAX_PLACES_PAR_COMMANDE = env_int('MAX_PLACES_PAR_COMMANDE', 10)
+COMMANDES_EN_ATTENTE_MAX = env_int('COMMANDES_EN_ATTENTE_MAX', 3)   # réservations non payées simultanées par compte : évite d'accaparer les places
+JETON_DUREE_JOURS = env_int('JETON_DUREE_JOURS', 30)                 # durée de vie du jeton de connexion de l'application
 
-# --- Connexion, sessions et limitation des tentatives ---
-LOGIN_URL = 'compte:connexion'
-LOGIN_REDIRECT_URL = 'compte:mes_billets'   # destination par défaut après connexion
-LOGOUT_REDIRECT_URL = 'accueil'
+DEVISE_PAR_DEFAUT = env('DEVISE_PAR_DEFAUT', 'EUR').upper()   # monnaie proposée à la création d'un événement (code à 3 lettres)
+if not re.fullmatch(r'[A-Z]{3}', DEVISE_PAR_DEFAUT):
+    raise ImproperlyConfigured('DEVISE_PAR_DEFAUT doit être un code de monnaie à 3 lettres (ex. EUR, XOF).')
+
+
+# --- API pour l'application (Expo / React Native) ---
+def _origines_cors():
+    """Sites web autorisés à appeler l'API depuis un navigateur : https://domaine[:port], un par origine, séparés par des
+    virgules. Une application mobile native n'est pas soumise au CORS : seule la version WEB de l'application en a besoin
+    (en développement, par exemple http://localhost:8081). Vide = aucun site tiers. Le joker « * » est refusé volontairement."""
+    origines = []
+    for origine in (env('CORS_ORIGINES_AUTORISEES', '') or '').split(','):
+        origine = origine.strip().rstrip('/')   # une barre finale est une faute de frappe courante : elle ne correspondrait jamais
+        if not origine:
+            continue
+        if not re.fullmatch(r'https?://[^/\s*]+', origine):
+            raise ImproperlyConfigured(
+                f"CORS_ORIGINES_AUTORISEES : « {origine} » n'est pas une origine valide (attendu : http://localhost:8081, sans « * »).")
+        origines.append(origine)
+    return origines
+
+
+CORS_ORIGINES_AUTORISEES = _origines_cors()
+
+# --- Administration (sessions) et limitation des tentatives de connexion de l'API ---
 CONNEXION_TENTATIVES_MAX = env_int('CONNEXION_TENTATIVES_MAX', 5)          # échecs autorisés…
 CONNEXION_FENETRE_MINUTES = env_int('CONNEXION_FENETRE_MINUTES', 15)       # …par adresse IP + e-mail, sur cette durée
-SESSION_COOKIE_AGE = env_int('SESSION_DUREE_JOURS', 30) * 24 * 3600        # durée avec « Rester connecté »
+SESSION_COOKIE_AGE = env_int('SESSION_DUREE_JOURS', 30) * 24 * 3600        # durée de la session de l'administration
 SESSION_COOKIE_SECURE = not DEBUG        # cookies de session et CSRF en HTTPS seulement en production
 CSRF_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
 
-# Les cookies ne sont PAS séparés par numéro de port : deux projets Django lancés en local sur 127.0.0.1 (même sur des
+# Cookies de l'administration Django. Ils ne sont PAS séparés par numéro de port : deux projets Django lancés en local sur 127.0.0.1 (même sur des
 # ports différents) se partagent un cookie « csrftoken » et un cookie « sessionid », et s'écrasent l'un l'autre
 # (erreur 403 CSRF, déconnexions surprises). On donne donc à ce projet des noms de cookie à lui.
 _PREFIXE_COOKIE = env('COOKIE_PREFIXE', 'billetterie')
 CSRF_COOKIE_NAME = f'{_PREFIXE_COOKIE}_csrftoken'
 SESSION_COOKIE_NAME = f'{_PREFIXE_COOKIE}_sessionid'
-
-# Jeton CSRF périmé (page restée ouverte, autre onglet…) : une page claire plutôt que l'erreur brute de Django.
-CSRF_FAILURE_VIEW = 'compte.views.echec_csrf'
 
 # Le compteur de tentatives utilise le cache. LocMem suffit pour un seul processus (développement) ;
 # en production avec plusieurs processus, utilisez un cache partagé (Redis, base de données…).
@@ -199,3 +218,7 @@ CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'
 VERIFICATION_EMAIL_JOURS = env_int('VERIFICATION_EMAIL_JOURS', 3)               # durée de validité du lien de vérification
 RENVOI_VERIFICATION_SECONDES = env_int('RENVOI_VERIFICATION_SECONDES', 60)      # délai minimum entre deux renvois
 PASSWORD_RESET_TIMEOUT = env_int('MDP_LIEN_DUREE_HEURES', 24) * 3600            # durée de validité du lien « mot de passe oublié »
+DEMANDES_COMPTE_MAX = env_int('DEMANDES_COMPTE_MAX', 10)                         # inscriptions / demandes de mot de passe par IP et par fenêtre
+
+# Adresse de l'APPLICATION (écran web Expo) : les liens des e-mails (vérification, mot de passe oublié) y mènent.
+FRONT_URL = (env('FRONT_URL', 'http://localhost:8081') or '').rstrip('/')

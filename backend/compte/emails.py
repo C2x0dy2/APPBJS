@@ -1,23 +1,31 @@
 """
 E-mails du compte (vérification de l'adresse, mot de passe oublié).
 
-Chaque e-mail a une version HTML (aux couleurs du site) et une version texte. L'expéditeur et la
-signature viennent de « Paramètres du site ». Les e-mails n'acceptent pas les variables CSS : les
-couleurs sont donc recopiées ici, à UN seul endroit, depuis assets/css/variables.css.
+Chaque e-mail a une version HTML (aux couleurs du site) et une version texte. L'expéditeur et la signature viennent de
+« Paramètres du site ». Les liens ouvrent l'APPLICATION (adresse FRONT_URL du fichier .env) : c'est elle qui affiche
+l'écran de vérification ou de nouveau mot de passe, puis appelle l'API.
 """
 from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
 from django.core import signing
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
-from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from django.utils.translation import gettext as _
 
 from ticketing.models import ParametresSite
 
-# Mêmes valeurs que dans assets/css/variables.css (les clients e-mail ne lisent pas les variables CSS).
+# Les e-mails n'acceptent pas les variables CSS : les couleurs sont écrites ici, à UN seul endroit (violet du logo,
+# jaune d'accent, fonds clairs).
 COULEURS_EMAIL = {'violet': '#5a1b9e', 'jaune': '#f4a62a', 'texte_bouton': '#35106a', 'creme': '#fffaf3', 'encre': '#1d0b33', 'gris': '#6b5d78'}
 
 SEL_VERIFICATION = 'verification-email'
+
+
+def lien_application(chemin):
+    """Adresse d'un écran de l'application, par exemple '/verify-email/<jeton>'."""
+    return settings.FRONT_URL.rstrip('/') + chemin
 
 
 def contexte_email(**extra):
@@ -52,8 +60,17 @@ def lire_jeton(jeton):
     return signing.loads(jeton, salt=SEL_VERIFICATION, max_age=settings.VERIFICATION_EMAIL_JOURS * 86400)
 
 
-def envoyer_verification(request, utilisateur):
-    lien = request.build_absolute_uri(reverse('compte:verifier_email', args=[fabriquer_jeton(utilisateur)]))
+def envoyer_verification(utilisateur):
     envoyer(_('Vérifie ton adresse e-mail'), 'verification',
-            {'prenom': utilisateur.first_name, 'nom_utilisateur': utilisateur.username, 'lien': lien,
+            {'prenom': utilisateur.first_name, 'nom_utilisateur': utilisateur.username,
+             'lien': lien_application(f'/verify-email/{fabriquer_jeton(utilisateur)}'),
              'jours': settings.VERIFICATION_EMAIL_JOURS}, utilisateur.email)
+
+
+# ----------------------------------------------------------------- mot de passe oublié
+def envoyer_reinitialisation(utilisateur):
+    """Lien à usage unique : il devient invalide dès que le mot de passe change (jeton de Django)."""
+    uid = urlsafe_base64_encode(force_bytes(utilisateur.pk))
+    jeton = default_token_generator.make_token(utilisateur)
+    envoyer(_('Réinitialisation de ton mot de passe'), 'mdp_reinit',
+            {'lien': lien_application(f'/reset-password/{uid}/{jeton}'), 'nom_utilisateur': utilisateur.username}, utilisateur.email)

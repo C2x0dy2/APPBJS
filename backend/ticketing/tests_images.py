@@ -3,11 +3,9 @@ Tests des images : validation à l'upload, alt obligatoire, versions WebP, suppr
 (srcset, lazy, solutions de repli) et gestion dans l'espace organisateur. Chaque test crée ses données, dans
 un dossier temporaire qui est effacé à la fin (jamais le vrai dossier des médias).
 """
-import json
 import shutil
 import tempfile
 
-from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
@@ -16,9 +14,9 @@ from django.urls import reverse
 from PIL import Image
 
 from . import images
-from .fabriques import creer_evenement, creer_image, creer_organisation, creer_utilisateur
+from .fabriques import creer_evenement, creer_image, creer_organisation
 from .images import valider_image
-from .models import Categorie, Evenement, ImageEvenement, ImageLieu, Lieu, Membre
+from .models import Categorie, Evenement, ImageEvenement, ImageLieu, Lieu
 
 HACHAGE_RAPIDE = override_settings(PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
 
@@ -303,79 +301,6 @@ class SuppressionFichiersTests(StockageTemporaire):
 
 
 # ======================================================================================
-# Affichage public : srcset, lazy, solutions de repli
-# ======================================================================================
-class AffichageImagesTests(StockageTemporaire):
-    def evenement(self, **champs):
-        evenement, _ = creer_evenement(a_la_une=True, **champs)
-        return evenement
-
-    def avec_image(self, evenement):
-        evenement.image_principale = creer_image(largeur=2000, hauteur=1200)
-        evenement.image_principale_alt = 'Foule devant la scène'
-        return self.enregistrer(evenement)
-
-    def test_carte_avec_srcset_sizes_lazy_et_alt(self):
-        self.avec_image(self.evenement())
-        page = self.client.get(reverse('accueil')).content.decode()
-        self.assertIn('srcset="', page)
-        self.assertRegex(page, r'-320w\.webp \d+w|-320w\.webp 320w')
-        self.assertIn('320w', page)
-        self.assertIn('1600w', page)
-        self.assertIn('sizes="(min-width: 1024px) 340px, 80vw"', page)
-        self.assertIn('loading="lazy"', page)
-        self.assertIn('alt="Foule devant la scène"', page)
-        self.assertIn('width="2000"', page)
-        self.assertIn('height="1200"', page)
-
-    def test_fiche_image_principale_en_priorite_et_galerie_en_lazy(self):
-        evenement = self.avec_image(self.evenement())
-        self.enregistrer(ImageEvenement(evenement=evenement, image=creer_image('g.jpg', 1000, 700), alt='Vue de la salle'))
-        page = self.client.get(reverse('evenement_detail', args=[evenement.slug])).content.decode()
-        principale = page[page.index('class="fiche-image"') - 400:page.index('class="fiche-image"') + 200]
-        self.assertIn('fetchpriority="high"', principale)
-        self.assertNotIn('loading="lazy"', principale)                       # image visible dès l'arrivée : pas de chargement différé
-        galerie = page[page.index('fiche-galerie'):]
-        self.assertIn('loading="lazy"', galerie)
-        self.assertIn('alt="Vue de la salle"', galerie)
-
-    def test_galerie_absente_si_aucune_image(self):
-        evenement = self.evenement()
-        self.assertNotContains(self.client.get(reverse('evenement_detail', args=[evenement.slug])), 'fiche-galerie')
-
-    def test_ordre_de_la_galerie_respecte(self):
-        evenement = self.evenement()
-        for nom, ordre in [('Troisième', 2), ('Première', 0), ('Deuxième', 1)]:
-            self.enregistrer(ImageEvenement(evenement=evenement, image=creer_image(nom + '.jpg', 800, 600), alt=nom, ordre=ordre))
-        page = self.client.get(reverse('evenement_detail', args=[evenement.slug])).content.decode()
-        self.assertLess(page.index('alt="Première"'), page.index('alt="Deuxième"'))
-        self.assertLess(page.index('alt="Deuxième"'), page.index('alt="Troisième"'))
-
-    def test_repli_sur_l_illustration_de_la_categorie(self):
-        categorie = Categorie.objects.create(nom='Jazz', illustration=creer_image('cat.jpg', 900, 600), illustration_alt='Un saxophone')
-        categorie = self.enregistrer(categorie)
-        self.evenement(categorie=categorie)
-        page = self.client.get(reverse('accueil')).content.decode()
-        self.assertIn('alt="Un saxophone"', page)
-        self.assertNotIn('ticket-fallback', page)
-
-    def test_repli_final_bloc_de_couleur_sans_aucune_image(self):
-        categorie = Categorie.objects.create(nom='Sans image', couleur='#123456')
-        self.evenement(categorie=categorie)
-        page = self.client.get(reverse('accueil')).content.decode()
-        self.assertIn('ticket-fallback', page)
-        self.assertIn('--fond:#123456', page)
-        self.assertNotIn('<img', page.split('class="ticket-media"')[1].split('ticket-body')[0])   # aucune image inventée
-
-    def test_l_image_de_l_evenement_prime_sur_celle_de_la_categorie(self):
-        categorie = self.enregistrer(Categorie(nom='Jazz', illustration=creer_image('cat.jpg', 900, 600), illustration_alt='Illustration catégorie'))
-        self.avec_image(self.evenement(categorie=categorie))
-        page = self.client.get(reverse('accueil')).content.decode()
-        self.assertIn('alt="Foule devant la scène"', page)
-        self.assertNotIn('Illustration catégorie', page)
-
-
-# ======================================================================================
 # Admin
 # ======================================================================================
 @HACHAGE_RAPIDE
@@ -404,7 +329,7 @@ class AdminImagesTests(StockageTemporaire):
         organisation = creer_organisation()
         donnees = {
             'organisation': organisation.pk, 'titre': 'Saisi en admin', 'slug': 'saisi-en-admin', 'debut_0': '2030-01-01', 'debut_1': '20:00:00',
-            'fuseau_horaire': 'Europe/Paris', 'publie': 'on',
+            'fuseau_horaire': 'Europe/Paris', 'devise': 'EUR', 'publie': 'on',
             'image_principale': creer_image(), 'image_principale_alt': 'Affiche',
             'types_place-TOTAL_FORMS': '0', 'types_place-INITIAL_FORMS': '0', 'types_place-MIN_NUM_FORMS': '0', 'types_place-MAX_NUM_FORMS': '1000',
             'galerie-TOTAL_FORMS': '1', 'galerie-INITIAL_FORMS': '0', 'galerie-MIN_NUM_FORMS': '0', 'galerie-MAX_NUM_FORMS': '1000',
@@ -421,173 +346,16 @@ class AdminImagesTests(StockageTemporaire):
         organisation = creer_organisation()
         r = self.client.post(reverse('admin:ticketing_evenement_add'), {
             'organisation': organisation.pk, 'titre': 'X', 'slug': 'x', 'debut_0': '2030-01-01', 'debut_1': '20:00:00', 'fuseau_horaire': 'Europe/Paris',
+            'devise': 'EUR',
             'types_place-TOTAL_FORMS': '0', 'types_place-INITIAL_FORMS': '0', 'types_place-MIN_NUM_FORMS': '0', 'types_place-MAX_NUM_FORMS': '1000',
             'galerie-TOTAL_FORMS': '1', 'galerie-INITIAL_FORMS': '0', 'galerie-MIN_NUM_FORMS': '0', 'galerie-MAX_NUM_FORMS': '1000',
             'galerie-0-image': creer_image(), 'galerie-0-alt': '', 'galerie-0-ordre': '0'})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Evenement.objects.count(), 0)
+        self.assertFalse(r.context['adminform'].form.errors)   # la fiche elle-même est valide : seul le texte alternatif de la galerie manque
+        self.assertTrue(any(formulaire.errors for formset in r.context['inline_admin_formsets'] for formulaire in formset.formset.forms))
 
     def test_fiches_de_lieu_et_de_categorie_s_affichent(self):
         lieu = Lieu.objects.create(nom='Salle', ville='Ville')
         self.assertEqual(self.client.get(reverse('admin:ticketing_lieu_change', args=[lieu.pk])).status_code, 200)
         self.assertEqual(self.client.get(reverse('admin:ticketing_lieu_add')).status_code, 200)
-
-
-# ======================================================================================
-# Espace organisateur : upload avec aperçu, galerie, ordre
-# ======================================================================================
-@HACHAGE_RAPIDE
-class ImagesOrganisateurTests(StockageTemporaire):
-    def setUp(self):
-        self.orga_a, self.orga_b = creer_organisation('Collectif A'), creer_organisation('Collectif B')
-        self.ev_a, _ = creer_evenement(self.orga_a, titre='Événement A')
-        self.ev_b, _ = creer_evenement(self.orga_b, titre='Événement B')
-        self.admin_a = creer_utilisateur('admin-a@test.fr')
-        self.gest_a = creer_utilisateur('gest-a@test.fr')
-        self.ctrl_a = creer_utilisateur('ctrl-a@test.fr')
-        self.admin_b = creer_utilisateur('admin-b@test.fr')
-        Membre.objects.create(utilisateur=self.admin_a, organisation=self.orga_a, role=Membre.ADMIN)
-        Membre.objects.create(utilisateur=self.gest_a, organisation=self.orga_a, role=Membre.GESTIONNAIRE)
-        Membre.objects.create(utilisateur=self.ctrl_a, organisation=self.orga_a, role=Membre.CONTROLEUR)
-        Membre.objects.create(utilisateur=self.admin_b, organisation=self.orga_b, role=Membre.ADMIN)
-        self.url = reverse('orga_images', args=[self.orga_a.slug, self.ev_a.pk])
-
-    def poster(self, donnees, url=None):
-        with self.captureOnCommitCallbacks(execute=True):
-            return self.client.post(url or self.url, donnees)
-
-    def ajouter(self, **champs):
-        donnees = {'action': 'ajouter', 'ajout-image': creer_image(), 'ajout-alt': 'Une description', **champs}
-        return self.poster(donnees)
-
-    # -- accès
-    def test_acces_selon_le_role_et_l_organisation(self):
-        self.assertEqual(self.client.get(self.url).status_code, 404)                 # anonyme
-        for utilisateur, attendu in [(self.admin_a, 200), (self.gest_a, 200), (self.ctrl_a, 404), (self.admin_b, 404)]:
-            with self.subTest(utilisateur=utilisateur.email):
-                self.client.force_login(utilisateur)
-                self.assertEqual(self.client.get(self.url).status_code, attendu)
-
-    def test_impossible_de_toucher_aux_images_d_un_autre_evenement(self):
-        self.client.force_login(self.admin_a)
-        url_b = reverse('orga_images', args=[self.orga_a.slug, self.ev_b.pk])        # événement de B via l'organisation A
-        self.assertEqual(self.client.get(url_b).status_code, 404)
-        self.assertEqual(self.poster({'action': 'ajouter', 'ajout-image': creer_image(), 'ajout-alt': 'X'}, url_b).status_code, 404)
-        self.assertEqual(ImageEvenement.objects.count(), 0)
-
-    def test_page_avec_apercu_et_limites_des_reglages(self):
-        self.client.force_login(self.admin_a)
-        page = self.client.get(self.url).content.decode()
-        self.assertIn('data-apercu', page)
-        self.assertIn('js/orga.js', page)
-        self.assertIn('data-max-octets="5242880"', page)
-        self.assertIn('5 Mo maximum', page)
-        self.assertIn('600 × 400', page)
-        self.assertIn('accept="image/jpeg,image/png,image/webp"', page)
-
-    # -- image principale
-    def test_envoi_de_l_image_principale(self):
-        self.client.force_login(self.admin_a)
-        r = self.poster({'action': 'principale', 'principale-image_principale': creer_image(largeur=2000, hauteur=1200),
-                         'principale-image_principale_alt': 'Affiche du concert'})
-        self.assertEqual(r.status_code, 302)
-        self.ev_a.refresh_from_db()
-        self.assertEqual(self.ev_a.image_principale_alt, 'Affiche du concert')
-        self.assertTrue(self.existe(images.nom_version(self.ev_a.image_principale.name, 800)))
-        self.assertContains(self.client.get(r['Location']), 'Image principale enregistrée.')
-
-    def test_image_principale_refusee_sans_alt_ou_trop_petite(self):
-        self.client.force_login(self.admin_a)
-        r = self.poster({'action': 'principale', 'principale-image_principale': creer_image(), 'principale-image_principale_alt': ''})
-        self.assertContains(r, 'le texte alternatif est obligatoire')
-        r = self.poster({'action': 'principale', 'principale-image_principale': creer_image(largeur=200, hauteur=100),
-                         'principale-image_principale_alt': 'Texte'})
-        self.assertContains(r, 'trop petite')
-        self.ev_a.refresh_from_db()
-        self.assertFalse(self.ev_a.image_principale)
-
-    def test_suppression_de_l_image_principale(self):
-        self.client.force_login(self.admin_a)
-        self.poster({'action': 'principale', 'principale-image_principale': creer_image(), 'principale-image_principale_alt': 'A'})
-        self.ev_a.refresh_from_db()
-        nom = self.ev_a.image_principale.name
-        r = self.poster({'action': 'principale', 'principale-supprimer': 'on', 'principale-image_principale_alt': 'A'})
-        self.assertEqual(r.status_code, 302)
-        self.ev_a.refresh_from_db()
-        self.assertFalse(self.ev_a.image_principale)
-        self.assertEqual(self.ev_a.image_principale_alt, '')
-        self.assertFalse(self.existe(nom))
-
-    # -- galerie
-    def test_ajout_a_la_galerie_avec_ordre_croissant(self):
-        self.client.force_login(self.admin_a)
-        self.assertEqual(self.ajouter(**{'ajout-alt': 'Première'}).status_code, 302)
-        self.ajouter(**{'ajout-alt': 'Seconde'})
-        self.assertEqual(list(self.ev_a.galerie.values_list('alt', flat=True)), ['Première', 'Seconde'])
-
-    def test_ajout_refuse_sans_alt_ou_format_invalide(self):
-        self.client.force_login(self.admin_a)
-        self.assertContains(self.ajouter(**{'ajout-alt': ''}), 'obligatoire')
-        self.assertContains(self.ajouter(**{'ajout-image': creer_image('a.gif', format='GIF')}), 'Format non accepté')
-        self.assertEqual(self.ev_a.galerie.count(), 0)
-
-    def formset(self, images_galerie, **changements):
-        donnees = {'action': 'galerie', 'galerie-TOTAL_FORMS': str(len(images_galerie)), 'galerie-INITIAL_FORMS': str(len(images_galerie)),
-                   'galerie-MIN_NUM_FORMS': '0', 'galerie-MAX_NUM_FORMS': '1000'}
-        for i, image in enumerate(images_galerie):
-            donnees.update({f'galerie-{i}-id': image.pk, f'galerie-{i}-alt': image.alt, f'galerie-{i}-ordre': image.ordre})
-        donnees.update(changements)
-        return donnees
-
-    def galerie_de_trois(self):
-        for nom in ['A', 'B', 'C']:
-            self.enregistrer(ImageEvenement(evenement=self.ev_a, image=creer_image(nom + '.jpg'), alt=nom, ordre=len(nom) and 'ABC'.index(nom)))
-        return list(self.ev_a.galerie.all())
-
-    def test_reordonnancement_de_la_galerie(self):
-        self.client.force_login(self.admin_a)
-        a, b, c = self.galerie_de_trois()
-        # le JavaScript renumérote : C en premier, puis A, puis B
-        r = self.poster(self.formset([a, b, c], **{'galerie-0-ordre': 1, 'galerie-1-ordre': 2, 'galerie-2-ordre': 0}))
-        self.assertEqual(r.status_code, 302)
-        self.assertEqual(list(self.ev_a.galerie.values_list('alt', flat=True)), ['C', 'A', 'B'])
-        self.assertEqual(list(self.ev_a.galerie.values_list('ordre', flat=True)), [0, 1, 2])   # renumérotation propre
-
-    def test_modification_du_texte_et_suppression_dans_la_galerie(self):
-        self.client.force_login(self.admin_a)
-        a, b, c = self.galerie_de_trois()
-        nom_b = b.image.name
-        r = self.poster(self.formset([a, b, c], **{'galerie-0-alt': 'Nouveau texte', 'galerie-1-DELETE': 'on'}))
-        self.assertEqual(r.status_code, 302)
-        self.assertEqual(sorted(self.ev_a.galerie.values_list('alt', flat=True)), ['C', 'Nouveau texte'])
-        self.assertFalse(self.existe(nom_b))                                          # fichiers supprimés avec l'image
-
-    def test_galerie_alt_vide_refuse(self):
-        self.client.force_login(self.admin_a)
-        a, b, c = self.galerie_de_trois()
-        r = self.poster(self.formset([a, b, c], **{'galerie-0-alt': ''}))
-        self.assertEqual(r.status_code, 200)
-        a.refresh_from_db()
-        self.assertEqual(a.alt, 'A')
-
-    def test_une_image_d_un_autre_collectif_n_est_pas_modifiable_via_le_formulaire(self):
-        autre = self.enregistrer(ImageEvenement(evenement=self.ev_b, image=creer_image('b.jpg'), alt='Image de B'))
-        self.client.force_login(self.admin_a)
-        donnees = {'action': 'galerie', 'galerie-TOTAL_FORMS': '1', 'galerie-INITIAL_FORMS': '1', 'galerie-MIN_NUM_FORMS': '0',
-                   'galerie-MAX_NUM_FORMS': '1000', 'galerie-0-id': autre.pk, 'galerie-0-alt': 'Piratée', 'galerie-0-ordre': 0,
-                   'galerie-0-DELETE': 'on'}
-        self.poster(donnees)
-        autre.refresh_from_db()
-        self.assertEqual(autre.alt, 'Image de B')
-        self.assertTrue(ImageEvenement.objects.filter(pk=autre.pk).exists())
-        self.assertTrue(self.existe(autre.image.name))
-
-    def test_action_inconnue_donne_404(self):
-        self.client.force_login(self.admin_a)
-        self.assertEqual(self.poster({'action': 'nimporte'}).status_code, 404)
-
-    def test_csrf_exige_en_conditions_reelles(self):
-        from django.test import Client
-        client = Client(enforce_csrf_checks=True)
-        client.force_login(self.admin_a)
-        self.assertEqual(client.post(self.url, {'action': 'ajouter'}).status_code, 403)

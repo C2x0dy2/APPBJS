@@ -6,7 +6,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
-from . import images, models
+from . import images, models, services
 
 admin.site.site_header = _('Administration de la billetterie')
 admin.site.site_title = _('Billetterie')
@@ -62,28 +62,19 @@ class OrganisationAdmin(admin.ModelAdmin):
 # ---------------------------------------------------------------- Réglages du site
 @admin.register(models.ParametresSite)
 class ParametresSiteAdmin(admin.ModelAdmin):
-    """Une seule fiche : on y accède directement, sans liste."""
-    readonly_fields = ('apercu_logo', 'apercu_hero', 'apercu_auth')
+    """Une seule fiche : on y accède directement, sans liste.
+
+    Seuls les réglages encore utilisés sont proposés : l'interface du public est l'application, qui a son propre contenu.
+    (Les anciens champs de l'interface web — texte de la page d'accueil, panneau de connexion, logo — existent encore dans
+    la base mais ne servent plus ; ils seront retirés par une migration de nettoyage.)"""
     fieldsets = (
-        (_('Identité'), {'fields': ('nom_site', 'logo', 'apercu_logo', 'favicon', 'meta_description')}),
-        (_("Page d'accueil"), {
-            'description': _("Tout ce qui est vide n'est pas affiché. Rien n'est inventé par défaut."),
-            'fields': ('hero_titre', 'hero_texte', 'hero_annotation', 'hero_image', 'apercu_hero', 'hero_image_alt', 'titre_a_la_une')}),
-        (_('Pages de compte (connexion, inscription)'), {
-            'description': _("Facultatif. Un champ vide n'est pas affiché sur la page."),
-            'fields': ('image_auth', 'apercu_auth', 'image_auth_alt', 'auth_connexion_titre', 'auth_connexion_sous_titre',
-                       'auth_inscription_titre', 'auth_inscription_sous_titre', 'auth_arguments')}),
+        (_('Identité'), {'fields': ('nom_site',), 'description': _("Le nom apparaît dans les e-mails envoyés (vérification, mot de passe oublié).")}),
         (_('Pages légales et e-mails'), {
-            'description': _("Les CGV et la confidentialité se rédigent dans « Pages de texte ». Ici, on choisit celles que l'inscription affiche."),
+            'description': _("Les CGV et la confidentialité se rédigent dans « Pages de texte ». Ici, on choisit celles que l'application propose à l'inscription."),
             'fields': ('page_cgv', 'page_confidentialite', 'email_expediteur_nom', 'email_signature')}),
         (_('Contact'), {'fields': ('email_contact', 'telephone_contact')}),
-        (_('Règles et affichage'), {'fields': (
-            'devise', 'seuil_dernieres_places_pct', 'delai_annulation_defaut_heures',
-            'nombre_evenements_a_la_une', 'nombre_categories_barre')}),
+        (_('Règles'), {'fields': ('seuil_dernieres_places_pct', 'delai_annulation_defaut_heures')}),
     )
-    apercu_logo = _apercu('logo', 50)
-    apercu_hero = _apercu('hero_image', 120)
-    apercu_auth = _apercu('image_auth', 120)
 
     def has_add_permission(self, request):
         return not models.ParametresSite.objects.exists()
@@ -166,21 +157,22 @@ class ImageEvenementInline(admin.TabularInline):
 
 @admin.register(models.Evenement)
 class EvenementAdmin(admin.ModelAdmin):
-    list_display = ('titre', 'organisation', 'categorie', 'lieu', 'debut', 'publie', 'a_la_une')
-    list_filter = ('organisation', 'categorie', 'publie', 'a_la_une', 'est_en_ligne')
+    list_display = ('titre', 'organisation', 'categorie', 'lieu', 'debut', 'publie', 'annule')
+    list_filter = ('organisation', 'categorie', 'publie', 'annule', 'a_la_une', 'est_en_ligne')
     search_fields = ('titre', 'artiste', 'description', 'lieu__nom', 'lieu__ville')
     date_hierarchy = 'debut'
     prepopulated_fields = {'slug': ('titre',)}
     autocomplete_fields = ('lieu',)
     readonly_fields = ('apercu_image',)
     inlines = [TypePlaceInline, ImageEvenementInline]
-    actions = ['publier', 'depublier']
+    actions = ['publier', 'depublier', 'annuler']
     fieldsets = (
         (_('Description'), {'fields': ('organisation', 'titre', 'slug', 'artiste', 'categorie', 'description')}),
         (_('Images'), {'fields': ('image_principale', 'apercu_image', 'image_principale_alt'),
                        'description': _("La galerie se gère plus bas, dans « Images de l'événement ».")}),
-        (_('Date et lieu'), {'fields': ('debut', 'fuseau_horaire', 'lieu', 'est_en_ligne')}),
-        (_('Vente'), {'fields': ('date_limite_annulation', 'publie', 'a_la_une')}),
+        (_('Date et lieu'), {'fields': ('debut', 'ouverture_portes', 'fuseau_horaire', 'lieu', 'lieu_texte', 'est_en_ligne')}),
+        (_('Vente'), {'fields': ('devise', 'date_limite_annulation', 'publie', 'annule', 'a_la_une'),
+                      'description': _("Pour annuler un événement, utilisez l'action « Annuler les événements sélectionnés » : elle annule aussi les billets et marque les paiements à rembourser.")}),
     )
     apercu_image = _apercu('image_principale', 120)
 
@@ -191,6 +183,11 @@ class EvenementAdmin(admin.ModelAdmin):
     @admin.action(description=_('Repasser en brouillon'))
     def depublier(self, request, queryset):
         queryset.update(publie=False)
+
+    @admin.action(description=_('Annuler les événements sélectionnés (billets annulés, paiements à rembourser)'))
+    def annuler(self, request, queryset):
+        for evenement in queryset:
+            services.annuler_evenement(evenement)
 
 
 class TarifInline(admin.TabularInline):
@@ -224,7 +221,7 @@ class CommandeAdmin(admin.ModelAdmin):
     list_filter = ('statut', 'a_rembourser', 'evenement__organisation')
     search_fields = ('email', 'evenement__titre')
     inlines = [LigneCommandeInline]
-    readonly_fields = ('evenement', 'email', 'moyen_paiement', 'total_centimes', 'cree_le', 'expire_le', 'payee_le')
+    readonly_fields = ('evenement', 'utilisateur', 'email', 'moyen_paiement', 'total_centimes', 'cree_le', 'expire_le', 'payee_le')
 
     def has_add_permission(self, request):
         return False
@@ -254,3 +251,19 @@ class PageLegaleAdmin(admin.ModelAdmin):
     list_filter = ('publiee',)
     search_fields = ('titre', 'contenu')
     prepopulated_fields = {'slug': ('titre',)}
+
+
+@admin.register(models.JetonApi)
+class JetonApiAdmin(admin.ModelAdmin):
+    """Les appareils connectés à l'application. On ne peut que les consulter et les supprimer (= déconnecter l'appareil)."""
+    list_display = ('utilisateur', 'appareil', 'cree_le', 'derniere_utilisation', 'expire_le')
+    search_fields = ('utilisateur__username', 'utilisateur__email')
+    list_filter = ('utilisateur',)
+    readonly_fields = ('utilisateur', 'appareil', 'cree_le', 'derniere_utilisation', 'expire_le')
+    exclude = ('empreinte',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

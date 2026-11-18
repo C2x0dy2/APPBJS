@@ -1,6 +1,0 @@
-{% comment %}Un champ de l'espace organisateur : libellé, saisie, erreur reliée au champ. Paramètre : champ.{% endcomment %}
-<div class="orga-groupe">
-  <label class="orga-libelle" for="{{ champ.id_for_label }}">{{ champ.label }}</label>
-  {{ champ }}
-  {% for erreur in champ.errors %}<p class="orga-erreur" id="{{ champ.auto_id }}-erreur" role="alert">{{ erreur }}</p>{% endfor %}
-</div>

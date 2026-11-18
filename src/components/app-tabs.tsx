@@ -7,13 +7,14 @@ import { Colors } from '@/constants/theme';
 // Barre d'onglets native (iOS / Android). Chaque espace lui passe SA liste d'onglets.
 export default function AppTabs({ tabs }: { tabs: TabConfig[] }) {
   const scheme = useColorScheme();
-  const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
+  const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
   return (
     <NativeTabs
-      backgroundColor={colors.background}
-      indicatorColor={colors.backgroundElement}
-      labelStyle={{ selected: { color: colors.text } }}>
+      backgroundColor={colors.surface}
+      tintColor={colors.primary}
+      indicatorColor={colors.primarySoft}
+      labelStyle={{ selected: { color: colors.primary } }}>
       {tabs.map((tab) => (
         <NativeTabs.Trigger key={tab.name} name={tab.name}>
           <NativeTabs.Trigger.Label>{tab.label}</NativeTabs.Trigger.Label>

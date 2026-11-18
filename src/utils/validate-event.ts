@@ -1,7 +1,7 @@
-import { EditedTicketType } from "../services/evenservices";
-import { EvenStatus, Event } from "../types/even";
+import { EventInput, TicketTypeInput } from "../services/organizerservices";
+import { Event } from "../types/even";
+import { SiteInfo } from "../types/site";
 import { TicketType } from "../types/ticket";
-import { DEFAULT_CURRENCY } from "../constants/currencies";
 import { currencyDecimals } from "./format";
 
 // Dans un formulaire, tout ce que l'on tape est du texte : on garde donc des string ici,
@@ -15,16 +15,19 @@ export interface TicketForm {
   earlyPriceDeadline: string;
 }
 
+// Les seuls statuts qu'on peut choisir : « complet » et « terminé » sont calculés par le serveur.
+export type EditableStatus = "draft" | "on_sale";
+
 export interface EventForm {
   name: string;
   location: string;
   date: string;
   startTime: string;
-  doorsOpenTime: string;
+  doorsOpenTime: string; // facultatif
   timezone: string;
   currency: string;
-  cancellationDeadline: string;
-  status: EvenStatus;
+  cancellationDeadline: string; // facultatif : sinon le délai par défaut du site
+  status: EditableStatus;
   tickets: TicketForm[];
 }
 
@@ -37,18 +40,21 @@ export const emptyTicket: TicketForm = {
 };
 
 // Formulaire de création : vide, avec deux lignes de places (l'énoncé : au moins deux types).
-export const emptyEventForm: EventForm = {
-  name: "",
-  location: "",
-  date: "",
-  startTime: "",
-  doorsOpenTime: "",
-  timezone: "Europe/Paris",
-  currency: DEFAULT_CURRENCY,
-  cancellationDeadline: "",
-  status: "draft",
-  tickets: [emptyTicket, emptyTicket],
-};
+// La monnaie et le fuseau proposés sont ceux que règle le serveur (ils viennent du site, rien n'est écrit ici).
+export function emptyEventForm(site?: SiteInfo): EventForm {
+  return {
+    name: "",
+    location: "",
+    date: "",
+    startTime: "",
+    doorsOpenTime: "",
+    timezone: site?.defaultTimezone ?? "",
+    currency: site?.defaultCurrency ?? "",
+    cancellationDeadline: "",
+    status: "draft",
+    tickets: [emptyTicket, emptyTicket],
+  };
+}
 
 // Modification : on pré-remplit le formulaire avec l'événement existant (nombres -> texte).
 export function eventToForm(event: Event, tickets: TicketType[]): EventForm {
@@ -57,11 +63,12 @@ export function eventToForm(event: Event, tickets: TicketType[]): EventForm {
     location: event.location,
     date: event.date,
     startTime: event.startTime,
-    doorsOpenTime: event.doorsOpenTime,
+    doorsOpenTime: event.doorsOpenTime ?? "",
     timezone: event.timezone,
     currency: event.currency,
     cancellationDeadline: event.cancellationDeadline,
-    status: event.status,
+    // « complet » est un état calculé : pour le serveur, l'événement est simplement en vente.
+    status: event.status === "draft" ? "draft" : "on_sale",
     tickets: tickets.map((ticket) => ({
       id: ticket.id,
       name: ticket.name,
@@ -74,18 +81,21 @@ export function eventToForm(event: Event, tickets: TicketType[]): EventForm {
 }
 
 // Envoi : texte -> nombres. À appeler seulement quand validateEvent n'a rien trouvé.
-export function formToTickets(tickets: TicketForm[]): EditedTicketType[] {
-  return tickets.map((ticket) => ({
+export function formToInput(form: EventForm): EventInput {
+  const ticketTypes: TicketTypeInput[] = form.tickets.map((ticket) => ({
     id: ticket.id,
     name: ticket.name.trim(),
     price: parseNumber(ticket.price),
     quantity: parseNumber(ticket.quantity),
-    earlyPrice: ticket.earlyPrice ? parseNumber(ticket.earlyPrice) : undefined,
-    earlyPriceDeadline: ticket.earlyPriceDeadline || undefined,
+    earlyPrice: ticket.earlyPrice.trim() ? parseNumber(ticket.earlyPrice) : undefined,
+    earlyPriceDeadline: ticket.earlyPriceDeadline.trim() || undefined,
   }));
+  const { tickets: _tickets, ...event } = form;
+  return { ...event, name: form.name.trim(), location: form.location.trim(), ticketTypes };
 }
 
 // Clé = nom du champ ("name", "tickets.0.price"...), valeur = message à afficher sous le champ.
+// Ce sont aussi les clés des erreurs que renvoie le serveur : il peut refuser ce que le formulaire a laissé passer.
 export type FormErrors = Record<string, string>;
 
 const DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/; // 2026-11-18
@@ -107,6 +117,15 @@ function isValidCurrency(code: string): boolean {
   return supportedValuesOf ? supportedValuesOf("currency").includes(code) : true;
 }
 
+function isValidTimezone(name: string): boolean {
+  try {
+    new Intl.DateTimeFormat("fr-FR", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Trop de décimales pour la devise ? (ex. 1500,50 F CFA alors que le franc CFA n'a pas de centimes)
 function hasTooManyDecimals(value: number, decimals: number): boolean {
   const factor = 10 ** decimals;
@@ -126,19 +145,22 @@ export function validateEvent(form: EventForm): FormErrors {
 
   if (!isValidDate(form.date)) errors.date = "Date invalide (format AAAA-MM-JJ).";
   if (!TIME_FORMAT.test(form.startTime)) errors.startTime = "Heure invalide (format HH:MM).";
-  if (!TIME_FORMAT.test(form.doorsOpenTime)) errors.doorsOpenTime = "Heure invalide (format HH:MM).";
 
-  // On compare seulement si les deux heures sont valides. "19:00" < "20:00" marche
-  // directement sur du texte parce que le format a toujours 2 chiffres.
-  if (!errors.startTime && !errors.doorsOpenTime && form.doorsOpenTime > form.startTime) {
-    errors.doorsOpenTime = "Les portes doivent ouvrir avant le début.";
+  // Les portes sont facultatives : on ne contrôle que ce qui est saisi.
+  if (form.doorsOpenTime.trim() !== "") {
+    if (!TIME_FORMAT.test(form.doorsOpenTime)) errors.doorsOpenTime = "Heure invalide (format HH:MM).";
+    // On compare seulement si les deux heures sont valides. "19:00" < "20:00" marche
+    // directement sur du texte parce que le format a toujours 2 chiffres.
+    else if (!errors.startTime && form.doorsOpenTime > form.startTime) errors.doorsOpenTime = "Les portes doivent ouvrir avant le début.";
   }
 
-  if (!isValidDate(form.cancellationDeadline)) {
-    errors.cancellationDeadline = "Date invalide (format AAAA-MM-JJ).";
-  } else if (!errors.date && form.cancellationDeadline > form.date) {
-    errors.cancellationDeadline = "Doit être avant ou le jour de l'événement.";
+  // La limite d'annulation aussi : vide, le serveur applique le délai par défaut du site.
+  if (form.cancellationDeadline.trim() !== "") {
+    if (!isValidDate(form.cancellationDeadline)) errors.cancellationDeadline = "Date invalide (format AAAA-MM-JJ).";
+    else if (!errors.date && form.cancellationDeadline > form.date) errors.cancellationDeadline = "Doit être avant ou le jour de l'événement.";
   }
+
+  if (!isValidTimezone(form.timezone)) errors.timezone = "Fuseau horaire inconnu (exemple : Europe/Paris).";
 
   const currencyOk = isValidCurrency(form.currency);
   if (!currencyOk) errors.currency = "Code devise inconnu (3 lettres ISO, ex. XOF, EUR, USD).";
@@ -161,8 +183,9 @@ export function validateEvent(form: EventForm): FormErrors {
       errors[`${key}.name`] = "Ce nom existe déjà dans cet événement.";
     }
 
+    // 0 est permis : une place gratuite (invitation…).
     const price = parseNumber(ticket.price);
-    if (isNaN(price) || price <= 0) errors[`${key}.price`] = "Prix supérieur à 0.";
+    if (isNaN(price) || price < 0) errors[`${key}.price`] = "Prix à partir de 0 (0 = place gratuite).";
     else if (hasTooManyDecimals(price, decimals)) errors[`${key}.price`] = decimalsError;
 
     const quantity = parseNumber(ticket.quantity);
@@ -178,8 +201,8 @@ export function validateEvent(form: EventForm): FormErrors {
       errors[`${key}.earlyPrice`] = "Remplir le prix early ET sa date de fin, ou aucun des deux.";
     } else if (hasEarlyPrice) {
       const earlyPrice = parseNumber(ticket.earlyPrice);
-      if (isNaN(earlyPrice) || earlyPrice <= 0) {
-        errors[`${key}.earlyPrice`] = "Prix early supérieur à 0.";
+      if (isNaN(earlyPrice) || earlyPrice < 0) {
+        errors[`${key}.earlyPrice`] = "Prix early à partir de 0.";
       } else if (hasTooManyDecimals(earlyPrice, decimals)) {
         errors[`${key}.earlyPrice`] = decimalsError;
       } else if (!isNaN(price) && earlyPrice >= price) {
