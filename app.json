@@ -37,6 +37,13 @@
           "photosPermission": "Fosse a besoin d'accéder à tes photos pour choisir l'affiche d'un événement.",
           "microphonePermission": false
         }
+      ],
+      "expo-sharing",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Fosse a besoin de la caméra pour scanner les billets à l'entrée."
+        }
       ]
     ],
     "experiments": {

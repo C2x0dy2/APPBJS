@@ -1,24 +1,139 @@
+import { supabase } from "../lib/supabase";
+import { Event } from "../types/even";
 import { PendingOrderDetails, TicketDetails } from "../types/order";
-import { apiRequest, orNotFound } from "./api";
+import { TicketType } from "../types/ticket";
+import { ApiError, mapSupabaseError, orNotFound } from "./api";
+import { getEventById } from "./evenservices";
+import { mapTicketType } from "./mappers";
 
-// Les billets et réservations de l'ACHETEUR connecté. Le serveur sait qui est la personne grâce à son jeton :
-// il ne renvoie jamais que SES billets, jamais ceux d'un autre compte.
+// Les billets et réservations de l'ACHETEUR CONNECTÉ : reserve_seats_multi/get_my_tickets/get_my_pending_orders
+// (voir supabase/migrations/0014_accounts_and_stats.sql) ne renvoient jamais que SES propres données — Postgres le
+// garantit (auth.uid()), pas seulement l'écran.
 
-// Les événements les plus proches d'abord (l'écran inverse l'ordre pour les billets passés).
+async function fetchEventsByIds(ids: string[]): Promise<Map<string, Event>> {
+  const unique = [...new Set(ids)];
+  const map = new Map<string, Event>();
+  await Promise.all(
+    unique.map(async (id) => {
+      const event = await getEventById(id);
+      if (event) map.set(id, event);
+    })
+  );
+  return map;
+}
+
+async function fetchTicketTypesByIds(ids: string[]): Promise<Map<string, TicketType>> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const { data, error } = await supabase.from("ticket_types").select("*").in("id", unique);
+  if (error) throw mapSupabaseError(error);
+  const map = new Map<string, TicketType>();
+   
+  for (const row of (data ?? []) as any[]) map.set(row.id, mapTicketType(row));
+  return map;
+}
+
 export async function getMyTickets(): Promise<TicketDetails[]> {
-  const { results } = await apiRequest<{ results: TicketDetails[] }>("/me/tickets/");
-  return results;
+  const { data, error } = await supabase.rpc("get_my_tickets");
+  if (error) throw mapSupabaseError(error);
+  type Row = {
+    ticket_id: string;
+    qr_code: string;
+    ticket_status: "valid" | "used" | "cancelled";
+    used_at: string | null;
+    event_id: string;
+    ticket_type_id: string;
+    order_id: string;
+  };
+  const rows = (data ?? []) as Row[];
+  const [events, ticketTypes] = await Promise.all([
+    fetchEventsByIds(rows.map((r) => r.event_id)),
+    fetchTicketTypesByIds(rows.map((r) => r.ticket_type_id)),
+  ]);
+
+  return rows
+    .map((row): TicketDetails | null => {
+      const event = events.get(row.event_id);
+      const ticketType = ticketTypes.get(row.ticket_type_id);
+      if (!event || !ticketType) return null;
+      return {
+        ticket: {
+          id: row.ticket_id,
+          eventId: row.event_id,
+          ticketTypeId: row.ticket_type_id,
+          orderId: row.order_id,
+          code: row.qr_code,
+          status: row.ticket_status === "cancelled" ? "canceled" : row.ticket_status,
+          usedAt: row.used_at ?? undefined,
+        },
+        event,
+        ticketType,
+      };
+    })
+    .filter((t): t is TicketDetails => t !== null);
 }
 
-// null : ce billet n'existe pas, ou il appartient à un autre compte (le serveur répond pareil dans les deux cas).
 export function getTicketDetails(ticketId: string): Promise<TicketDetails | null> {
-  return orNotFound(apiRequest<TicketDetails>(`/me/tickets/${encodeURIComponent(ticketId)}/`));
+  return orNotFound(
+    (async () => {
+      const tickets = await getMyTickets();
+      const found = tickets.find((t) => t.ticket.id === ticketId);
+      if (!found) throw new ApiError(404, "not_found", "Introuvable.");
+      return found;
+    })()
+  );
 }
 
-// Les réservations pas encore payées, dont les places sont encore bloquées.
 export async function getMyPendingOrders(): Promise<PendingOrderDetails[]> {
-  const { results } = await apiRequest<{ results: PendingOrderDetails[] }>("/me/reservations/");
-  return results;
+  const { data, error } = await supabase.rpc("get_my_pending_orders");
+  if (error) throw mapSupabaseError(error);
+  type Row = {
+    order_id: string;
+    event_id: string;
+    expires_at: string;
+    payment_method: "card" | "transfer";
+    currency: string;
+    total_cents: number;
+    ticket_type_id: string;
+    quantity: number;
+    unit_price_cents: number;
+  };
+  const rows = (data ?? []) as Row[];
+  const events = await fetchEventsByIds(rows.map((r) => r.event_id));
+  const ticketTypes = await fetchTicketTypesByIds(rows.map((r) => r.ticket_type_id));
+
+  const byOrder = new Map<string, Row[]>();
+  for (const row of rows) {
+    const list = byOrder.get(row.order_id) ?? [];
+    list.push(row);
+    byOrder.set(row.order_id, list);
+  }
+
+  const result: PendingOrderDetails[] = [];
+  for (const [orderId, lines] of byOrder) {
+    const first = lines[0];
+    const event = events.get(first.event_id);
+    if (!event) continue;
+    result.push({
+      order: {
+        id: orderId,
+        eventId: first.event_id,
+        expiresAt: first.expires_at,
+        paymentMethod: first.payment_method,
+        lines: lines.map((l) => ({ ticketTypeId: l.ticket_type_id, quantity: l.quantity })),
+      },
+      event,
+      lines: lines
+        .map((l) => {
+          const ticketType = ticketTypes.get(l.ticket_type_id);
+          if (!ticketType) return null;
+          return { ticketType, quantity: l.quantity, unitPrice: l.unit_price_cents / 100 };
+        })
+        .filter((l): l is NonNullable<typeof l> => l !== null),
+      total: first.total_cents / 100,
+    });
+  }
+  return result;
 }
 
 export interface ReservationItem {
@@ -27,10 +142,21 @@ export interface ReservationItem {
 }
 
 // Réserve des places : le serveur les bloque le temps du délai de paiement, puis les rend si rien n'est payé.
-// Refus possibles (ApiError.code) : "email_not_verified", "sold_out", "too_many_pending", "event_over", "validation".
-export function reserveTickets(eventId: string, items: ReservationItem[], paymentMethod: "card" | "transfer" = "card"): Promise<PendingOrderDetails> {
-  return apiRequest<PendingOrderDetails>(`/events/${encodeURIComponent(eventId)}/reservations/`, {
-    method: "POST",
-    body: { items, paymentMethod },
+// Refus possibles (ApiError.code) : "not_authenticated", "sold_out", "event_not_on_sale", "event_over".
+export async function reserveTickets(
+  eventId: string,
+  items: ReservationItem[],
+  paymentMethod: "card" | "transfer" = "card"
+): Promise<PendingOrderDetails> {
+  const { error } = await supabase.rpc("reserve_seats_multi", {
+    p_event_id: eventId,
+    p_items: items.map((i) => ({ ticket_type_id: i.ticketTypeId, quantity: i.quantity })),
+    p_payment_method: paymentMethod,
   });
+  if (error) throw mapSupabaseError(error);
+
+  const pending = await getMyPendingOrders();
+  const order = pending.find((o) => o.order.eventId === eventId);
+  if (!order) throw new ApiError(500, "server_error", "La réservation a été créée mais n'a pas pu être relue.");
+  return order;
 }

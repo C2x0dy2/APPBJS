@@ -18,7 +18,14 @@ import { ContentWidth, Radius } from "@/constants/theme";
 import { useLoad } from "@/hooks/use-load";
 import { useTheme } from "@/hooks/use-theme";
 import { errorMessage } from "@/services/api";
-import { cancelEvent, deleteEvent, getEventStats, getOrganizerEvent, getOrganizerTicketTypes } from "@/services/organizerservices";
+import {
+  cancelEvent,
+  deleteEvent,
+  exportParticipants,
+  getEventStats,
+  getOrganizerEvent,
+  getOrganizerTicketTypes,
+} from "@/services/organizerservices";
 import { Event } from "@/types/even";
 import { EventStats } from "@/types/organizer";
 import { OrganizerTicketType } from "@/types/ticket";
@@ -107,13 +114,26 @@ function OrganizerEvent({ event, tickets, stats, onChanged }: OrganizerEventProp
     }
   }
 
+  async function handleExport() {
+    setBusy(true);
+    setProblem("");
+    try {
+      await exportParticipants(event.id, `participants-${event.slug}`);
+    } catch (error) {
+      setProblem(errorMessage(error, "L'export a échoué. Réessaie."));
+    }
+    setBusy(false);
+  }
+
   // Quelles actions selon le statut :
   //   brouillon         -> Modifier, Supprimer (rien n'a été vendu)
-  //   en vente / complet -> Modifier, Annuler
-  //   terminé / annulé  -> plus aucune action
+  //   en vente / complet -> Modifier, Annuler, Scanner, Exporter
+  //   terminé           -> Scanner, Exporter
+  //   annulé            -> plus aucune action
   const canEdit = event.status === "draft" || event.status === "on_sale" || event.status === "sold_out";
   const canDelete = event.status === "draft";
   const canCancel = event.status === "on_sale" || event.status === "sold_out";
+  const canScanOrExport = event.status === "on_sale" || event.status === "sold_out" || event.status === "finished";
 
   return (
     <Screen scroll padded={false} topInset={false} maxWidth={ContentWidth.content}>
@@ -192,6 +212,20 @@ function OrganizerEvent({ event, tickets, stats, onChanged }: OrganizerEventProp
           )}
 
           {canDelete && <Button title="Supprimer le brouillon" icon="trash" variant="danger" onPress={handleDelete} loading={busy} />}
+
+          {canScanOrExport && (
+            <Button
+              title="Scanner les billets"
+              icon="scan"
+              variant="secondary"
+              disabled={busy}
+              onPress={() => router.push({ pathname: "/organizer/event/scan/[id]", params: { id: event.id } })}
+            />
+          )}
+
+          {canScanOrExport && (
+            <Button title="Exporter la liste des participants" icon="list" variant="secondary" onPress={handleExport} loading={busy} />
+          )}
 
           {canCancel && <Button title="Annuler l'événement" icon="close" variant="danger" onPress={handleCancel} loading={busy} />}
 

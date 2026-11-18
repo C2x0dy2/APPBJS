@@ -1,18 +1,17 @@
-import { API_URL } from "../constants/config";
-import { clearToken, getToken } from "./session-storage";
+import { supabase } from "../lib/supabase";
 
-// Le client de l'API Django (/api/v1/). Tous les services passent par apiRequest : c'est ici, et seulement ici, qu'on
-// envoie le jeton de connexion, qu'on lit les erreurs du serveur et qu'on gère les pannes réseau.
+// Les services parlent directement à Supabase (table + RLS, ou fonctions RPC pour tout ce qui doit rester
+// atomique côté serveur : réservation, annulation, chiffres organisateur…). Ce fichier ne garde que ce qui est
+// commun à tous : la forme des erreurs, et leur traduction depuis ce que Postgres/Supabase renvoie.
 
-const TIMEOUT_MS = 15_000;
-
-// Une erreur à expliquer à la personne. Le serveur répond toujours { error, message, fields? } : `message` est un texte
-// déjà rédigé en français, `fields` une erreur par champ de formulaire ("name", "tickets.0.price"…).
+// Une erreur à expliquer à la personne. `code` est lisible par le programme ("sold_out", "not_authenticated"…),
+// `fields` une erreur par champ de formulaire quand Supabase la fournit (rare : la plupart des validations de
+// formulaire restent côté app, voir utils/validate-*).
 export class ApiError extends Error {
-  status: number; // code HTTP ; 0 = aucune réponse du serveur
-  code: string; // lisible par le programme : "validation", "sold_out", "email_not_verified", "network"…
+  status: number; // 0 = aucune réponse du serveur (réseau), sinon un code HTTP approximatif pour l'affichage
+  code: string;
   fields: Record<string, string>;
-  details: Record<string, unknown>; // précisions du serveur (retryAfterMinutes, ticketTypeId…)
+  details: Record<string, unknown>;
 
   constructor(status: number, code: string, message: string, fields: Record<string, string> = {}, details: Record<string, unknown> = {}) {
     super(message);
@@ -25,12 +24,41 @@ export class ApiError extends Error {
   }
 }
 
-// Le texte à afficher pour n'importe quelle erreur (celles du serveur, celles du réseau, et les imprévues).
 export function errorMessage(error: unknown, fallback = "Une erreur est survenue. Réessaie dans un instant."): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-// Appelé quand le serveur refuse le jeton (expiré, révoqué) : l'application revient à l'état « déconnecté ».
+// Les exceptions Postgres (`raise exception 'code'` ou `'code: détail'`) arrivent dans `error.message` telles
+// quelles : on reconnaît celles que les fonctions SQL (Bintou) peuvent lever, pour un message français cohérent
+// partout dans l'app plutôt que le texte brut de la base.
+const KNOWN_CODES: Record<string, string> = {
+  sold_out: "Plus assez de places disponibles.",
+  not_authenticated: "Connecte-toi pour continuer.",
+  not_authorized: "Tu n'as pas accès à cette ressource.",
+  event_not_on_sale: "Cet événement n'est plus en vente.",
+  event_over: "Cet événement est déjà commencé ou terminé.",
+  invalid_quantity: "Quantité invalide.",
+  ticket_type_not_found: "Ce type de billet n'existe pas.",
+  ticket_already_used: "Ce billet a déjà été scanné.",
+  cancellation_deadline_passed: "La date limite d'annulation est dépassée.",
+  order_not_found: "Commande introuvable.",
+  order_not_cancellable: "Cette commande ne peut plus être annulée.",
+  transfer_not_available_this_close: "Le virement n'est plus disponible si proche de l'événement.",
+  too_many_pending: "Tu as déjà plusieurs réservations en attente de paiement.",
+};
+
+// Transforme n'importe quelle erreur Supabase (RPC, lecture de table, Auth) en ApiError, pour que tous les écrans
+// gèrent les refus de la même façon (voir ApiError ci-dessus).
+export function mapSupabaseError(error: unknown, fallback = "La demande a échoué."): ApiError {
+  if (error instanceof ApiError) return error;
+  const raw = error instanceof Error ? error.message : String(error);
+  const [, code] = raw.match(/^([a-z_]+)(?::|$)/) ?? [];
+  if (code && KNOWN_CODES[code]) return new ApiError(409, code, KNOWN_CODES[code]);
+  return new ApiError(0, "server_error", fallback);
+}
+
+// Appelé quand Supabase révoque la session en cours de route (jeton expiré, déconnexion depuis un autre appareil,
+// rafraîchissement impossible) : l'application revient à l'état « déconnecté ».
 const expiredListeners = new Set<() => void>();
 export function onSessionExpired(listener: () => void): () => void {
   expiredListeners.add(listener);
@@ -39,97 +67,20 @@ export function onSessionExpired(listener: () => void): () => void {
   };
 }
 
-type RequestOptions = {
-  method?: "GET" | "POST" | "PUT" | "DELETE";
-  body?: unknown; // envoyé en JSON
-  form?: FormData; // ou en formulaire (envoi d'un fichier)
-  auth?: boolean; // false : ne jamais envoyer le jeton (lectures publiques, connexion). Par défaut : oui, s'il existe.
-  token?: string | null; // jeton à utiliser à la place de celui de l'appareil (déconnexion)
-  timeoutMs?: number;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function defaultMessage(status: number): string {
-  if (status >= 500) return "Le serveur rencontre un problème. Réessaie dans un instant.";
-  if (status === 404) return "Introuvable.";
-  return "La demande a échoué.";
-}
-
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, form, auth = true, timeoutMs = TIMEOUT_MS } = options;
-
-  if (!API_URL) {
-    throw new ApiError(
-      0,
-      "not_configured",
-      "L'adresse du serveur n'est pas configurée. Renseigne EXPO_PUBLIC_API_URL dans le fichier .env, puis relance l'application."
-    );
+supabase.auth.onAuthStateChange((event) => {
+  if (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+    if (event === "SIGNED_OUT") expiredListeners.forEach((listener) => listener());
   }
+});
 
-  const token = auth ? (options.token !== undefined ? options.token : await getToken()) : null;
-  const headers: Record<string, string> = { Accept: "application/json", "Accept-Language": "fr" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  let payload: BodyInit | undefined;
-  if (form) {
-    payload = form; // pas de Content-Type : le moteur le fixe lui-même, avec la « boundary » du formulaire
-  } else if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    payload = JSON.stringify(body);
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response: Response;
-  try {
-    response = await fetch(`${API_URL}/api/v1${path}`, { method, headers, body: payload, signal: controller.signal });
-  } catch {
-    if (controller.signal.aborted) {
-      throw new ApiError(0, "timeout", "Le serveur met trop de temps à répondre. Réessaie dans un instant.");
-    }
-    throw new ApiError(0, "network", "Impossible de joindre le serveur. Vérifie ta connexion, puis réessaie.");
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (response.status === 204) return undefined as T;
-
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    data = undefined; // corps vide, ou page HTML d'une panne du serveur
-  }
-
-  if (response.ok) return data as T;
-
-  const answer = isRecord(data) ? data : {};
-  const code = typeof answer.error === "string" ? answer.error : "server_error";
-  const message = typeof answer.message === "string" ? answer.message : defaultMessage(response.status);
-
-  // Le jeton n'est plus valable (la même réponse 401 sert aussi aux mauvais identifiants, mais avec un autre code).
-  if (response.status === 401 && code === "unauthorized" && token) {
-    await clearToken();
-    expiredListeners.forEach((listener) => listener());
-  }
-
-  const { error: _error, message: _message, fields, ...details } = answer;
-  const fieldErrors: Record<string, string> = {};
-  if (isRecord(fields)) {
-    for (const [name, text] of Object.entries(fields)) if (typeof text === "string") fieldErrors[name] = text;
-  }
-  throw new ApiError(response.status, code, message, fieldErrors, details);
-}
-
-// Un identifiant inconnu (ou qui n'est pas le nôtre) donne toujours 404 : pour une lecture, c'est « pas trouvé », pas une panne.
+// Un identifiant inconnu (ou qui n'est pas le nôtre) donne toujours "introuvable" : pour une lecture, c'est ça,
+// pas une panne. PGRST116 = "no rows" (lecture .single() sans résultat).
 export async function orNotFound<T>(request: Promise<T>): Promise<T | null> {
   try {
     return await request;
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) return null;
+    const err = error as { code?: string; status?: number };
+    if (err?.code === "PGRST116" || err?.status === 404) return null;
     throw error;
   }
 }
