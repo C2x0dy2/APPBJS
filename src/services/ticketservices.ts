@@ -160,3 +160,14 @@ export async function reserveTickets(
   if (!order) throw new ApiError(500, "server_error", "La réservation a été créée mais n'a pas pu être relue.");
   return order;
 }
+
+// Ouvre le paiement Stripe d'une réservation par carte en attente ; renvoie l'URL de la page de
+// paiement à ouvrir dans un navigateur (expo-web-browser côté écran).
+export async function payOrder(orderId: string): Promise<{ url: string }> {
+  const returnUrl = typeof window !== "undefined" ? window.location.origin : undefined;
+  const { data, error } = await supabase.functions.invoke<{ url?: string; error?: string }>("create-checkout-session", {
+    body: { order_id: orderId, success_url: returnUrl, cancel_url: returnUrl },
+  });
+  if (error || !data?.url) throw mapSupabaseError(error ?? new Error(data?.error ?? "checkout_failed"));
+  return { url: data.url };
+}

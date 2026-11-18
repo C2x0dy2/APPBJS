@@ -39,15 +39,16 @@ rejouer d'anciens résultats).
 - **Tables** : `events`, `ticket_types`, `collectives` (en jointure), `collective_members`, `profiles`, `legal_pages`, `site_settings`.
 - **Fonctions SQL** (`supabase.rpc`) : `reserve_seats_multi`, `get_my_tickets`, `get_my_pending_orders`, `get_event_ticket_availability`,
   `get_event_stats`, `get_event_participants`, `get_collective_summary`, `validate_ticket_entry`, `create_profile`.
-- **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement).
+- **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement),
+  `create-checkout-session` (ouvre le paiement Stripe d'une réservation par carte, bouton « Payer »).
 
 Les migrations SQL et les Edge Functions **ne sont pas dans ce dépôt pour le moment**. Leur dernière version versionnée est au
 commit `71191e8` (`git show 71191e8 --stat -- supabase`, ou `git checkout 71191e8 -- supabase`).
 
 ## Pas encore disponible
 
-- Le paiement en ligne : une réservation bloque les places jusqu'à son échéance, puis elles sont rendues à la vente.
 - L'envoi de l'affiche d'un événement : l'application affiche « pas encore disponible » au lieu de faire semblant.
+- L'email de confirmation après paiement.
 
 ## Historique
 

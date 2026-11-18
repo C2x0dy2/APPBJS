@@ -9,7 +9,6 @@ import { SignInPrompt } from "@/components/sign-in-prompt";
 import { VerifyEmailBanner } from "@/components/verify-email-banner";
 import { AppText } from "@/components/ui/app-text";
 import { Avatar } from "@/components/ui/avatar";
-import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -124,12 +123,9 @@ export default function BuyerDashboardScreen() {
           {data.pending.length > 0 && (
             <View>
               <SectionHeader title="Réservations en cours" />
-              <Banner tone="info" style={styles.pendingNote}>
-                Le paiement en ligne n’est pas encore disponible : tes places restent bloquées jusqu’à l’échéance, puis sont rendues à la vente.
-              </Banner>
               <View style={styles.list}>
                 {data.pending.map((details) => (
-                  <PendingOrderCard key={details.order.id} details={details} />
+                  <PendingOrderCard key={details.order.id} details={details} onPaid={reload} />
                 ))}
               </View>
             </View>
@@ -197,10 +193,6 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
     marginTop: 16,
-    marginBottom: 12,
-  },
-
-  pendingNote: {
     marginBottom: 12,
   },
 
