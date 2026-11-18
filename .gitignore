@@ -37,6 +37,9 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# cache du CLI Supabase (il se recrée tout seul)
+supabase/.temp/
+
 example
 
 # generated native folders

@@ -16,8 +16,9 @@ cp .env.example .env     # puis renseigner l'adresse et la clé publique du proj
 npx expo start           # « w » pour le web ; ou Expo Go / un émulateur
 ```
 
-Sans ces deux variables, l'application s'arrête au démarrage avec un message qui les nomme. Après chaque changement du
-`.env` : `npx expo start --clear`.
+Sans ces deux variables, l'application s'arrête au démarrage avec un message qui les nomme. Les deux valeurs se trouvent dans
+*Project Settings → API* du tableau de bord du projet Supabase de l'équipe (voir `supabase/README.md`) : demande-les à la
+personne qui l'a créé. Après chaque changement du `.env` : `npx expo start --clear`.
 
 Avant de livrer : `npx tsc --noEmit` et `npx expo lint --no-cache` (`expo lint` garde un cache : sans `--no-cache`, il peut
 rejouer d'anciens résultats).
@@ -33,6 +34,7 @@ rejouer d'anciens résultats).
 | `src/context/` | Qui est connecté (`auth`), réglages du site (`site`) |
 | `src/hooks/use-load.ts` | Lecture de données avec chargement, erreur et « Réessayer » |
 | `src/components/` | Composants (`ui/` : le kit : boutons, champs, cartes…) |
+| `supabase/` | Le serveur : migrations SQL, Edge Functions et test de charge (voir `supabase/README.md`) |
 
 ## Ce que l'application utilise côté Supabase
 
@@ -41,13 +43,24 @@ rejouer d'anciens résultats).
   `get_event_stats`, `get_event_participants`, `get_collective_summary`, `validate_ticket_entry`, `create_profile`.
 - **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement).
 
-Les migrations SQL et les Edge Functions **ne sont pas dans ce dépôt pour le moment**. Leur dernière version versionnée est au
-commit `71191e8` (`git show 71191e8 --stat -- supabase`, ou `git checkout 71191e8 -- supabase`).
+Le serveur est versionné dans `supabase/` : `migrations/` (le schéma et la logique côté base : réservation sans survente,
+paiement idempotent, liste d'attente, annulations et remboursements, comptes, chiffres de vente, contrôle à l'entrée),
+`functions/` (les Edge Functions : paiement Stripe, e-mail de billet, connexion par nom d'utilisateur, annulations,
+remboursement) et `load-test.js` (test de charge k6). **`supabase/README.md` explique comment mettre en place un projet
+Supabase** : migrations à exécuter dans l'ordre, tâche planifiée, secrets Stripe et Resend.
 
-## Pas encore disponible
+## Pas encore disponible dans l'application
 
-- Le paiement en ligne : une réservation bloque les places jusqu'à son échéance, puis elles sont rendues à la vente.
-- L'envoi de l'affiche d'un événement : l'application affiche « pas encore disponible » au lieu de faire semblant.
+Le serveur sait déjà faire plus que ce que l'application appelle aujourd'hui. Pas encore branchés dans l'application :
+
+- le paiement en ligne (Stripe : `create-checkout-session` et `stripe-webhook`) : pour l'instant une réservation bloque les
+  places jusqu'à son échéance, puis elles sont rendues à la vente ;
+- la liste d'attente (`join_waitlist`, avec offre automatique quand une place se libère) ;
+- l'annulation par l'acheteur (`cancel-order`) et le remboursement par l'organisateur (`refund-order`) ;
+- l'e-mail de billet (`send-ticket-email`, envoyé par le webhook après un paiement par carte).
+
+Pas encore construit côté serveur : l'envoi de l'affiche d'un événement (l'application affiche « pas encore disponible » au
+lieu de faire semblant).
 
 ## Historique
 
