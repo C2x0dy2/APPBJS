@@ -1,49 +1,55 @@
-# Fosse : billetterie (application React / Expo + Supabase)
+# Fosse : billetterie (application React / Expo)
 
-Application de billetterie pour un collectif de Bordeaux (et deux collectifs partenaires), pour iOS, Android et le
-web. Un seul code, en TypeScript, avec [Expo](https://expo.dev) (SDK 57) et Expo Router. Deux espaces :
+Application de billetterie pour un collectif de Bordeaux, pour iOS, Android et le web. Un seul code, en TypeScript, avec
+[Expo](https://expo.dev) (SDK 57) et Expo Router. Deux espaces :
 
-- **Acheteur** (compte obligatoire) : accueil et recherche, détail d'un événement, réservation (plusieurs types de
-  billets à la fois), mes billets (QR code), mes réservations en attente, annulation jusqu'à la date limite.
-- **Organisateur** (cloisonné par collectif) : ses événements, création et modification, annulation (avec
-  remboursement automatique des commandes payées par carte), tableau de bord des ventes en temps réel, scan des
-  billets à l'entrée, export CSV des participants.
+- **Acheteur** (ouvert aux visiteurs) : accueil et recherche, détail d'un événement, réservation, mes billets (QR code), tableau de bord, compte.
+- **Organisateur** (cloisonné par collectif) : ses événements, création et modification, annulation, tableau de bord des ventes, contrôle des billets à l'entrée (caméra), export des participants.
 
-Ce dépôt contient **l'application ET le backend** : `src/` (Expo/React Native) et `supabase/` (schéma, moteur de
-réservation, fonctions Edge) vivent au même endroit — voir aussi `supabase/README.md` pour la mise en place du
-projet Supabase.
+Aucune donnée n'est écrite dans le code : tout vient d'un projet [Supabase](https://supabase.com) (base Postgres, comptes, fonctions).
 
-## Lancer l'application
+## Lancer
 
 ```bash
 npm install
-cp .env.example .env     # renseigner EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY
-npx expo start            # « w » pour le web ; ou Expo Go / un émulateur
+cp .env.example .env     # puis renseigner l'adresse et la clé publique du projet Supabase
+npx expo start           # « w » pour le web ; ou Expo Go / un émulateur
 ```
 
-Avant de livrer : `npx tsc --noEmit` et `npx expo lint`.
+Sans ces deux variables, l'application s'arrête au démarrage avec un message qui les nomme. Après chaque changement du
+`.env` : `npx expo start --clear`.
+
+Avant de livrer : `npx tsc --noEmit` et `npx expo lint --no-cache` (`expo lint` garde un cache : sans `--no-cache`, il peut
+rejouer d'anciens résultats).
 
 ## Où est quoi
 
 | Dossier | Rôle |
 | --- | --- |
-| `src/app/` | Les écrans (une route par fichier, Expo Router) : `(buyer)/`, `organizer/`, connexion, inscription, liens reçus par e-mail, pages légales |
-| `src/services/` | **Le seul endroit qui parle à Supabase** (`lib/supabase.ts` : le client ; `services/api.ts` : erreurs communes). Les écrans passent toujours par là, jamais par un accès direct à `supabase.from()` depuis un composant |
-| `src/types/` | La forme exacte de chaque objet renvoyé par les services |
+| `src/app/` | Les écrans (une route par fichier, Expo Router) : `(buyer)/`, `organizer/` (dont `event/scan/` : contrôle à l'entrée), connexion, inscription, liens reçus par e-mail, pages légales |
+| `src/lib/supabase.ts` | Le client Supabase ; il garde la session de connexion sur l'appareil |
+| `src/services/` | **Le seul endroit qui parle à Supabase** (`api.ts` : erreurs). Les écrans passent toujours par là |
+| `src/types/` | La forme des données que les écrans utilisent |
 | `src/context/` | Qui est connecté (`auth`), réglages du site (`site`) |
 | `src/hooks/use-load.ts` | Lecture de données avec chargement, erreur et « Réessayer » |
 | `src/components/` | Composants (`ui/` : le kit : boutons, champs, cartes…) |
-| `supabase/migrations/` | Le schéma et toute la logique métier critique (anti-survente, idempotence des paiements, liste d'attente, scan, annulation d'événement) en fonctions SQL atomiques |
-| `supabase/functions/` | Fonctions Edge (Deno) : paiement Stripe, email de confirmation, connexion par nom d'utilisateur, annulation d'événement avec remboursement |
 
-La session est gérée par Supabase Auth (jeton gardé par le client Supabase lui-même, via `expo-secure-store` sur
-téléphone et `localStorage` sur le web).
+## Ce que l'application utilise côté Supabase
 
-## Le backend attendu
+- **Tables** : `events`, `ticket_types`, `collectives` (en jointure), `collective_members`, `profiles`, `legal_pages`, `site_settings`.
+- **Fonctions SQL** (`supabase.rpc`) : `reserve_seats_multi`, `get_my_tickets`, `get_my_pending_orders`, `get_event_ticket_availability`,
+  `get_event_stats`, `get_event_participants`, `get_collective_summary`, `validate_ticket_entry`, `create_profile`.
+- **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement).
 
-L'app ne parle qu'à Supabase : pas de serveur REST intermédiaire. `supabase/README.md` documente la mise en place
-complète (migrations à exécuter dans l'ordre, secrets Stripe/Resend, planification `pg_cron`).
+Les migrations SQL et les Edge Functions **ne sont pas dans ce dépôt pour le moment**. Leur dernière version versionnée est au
+commit `71191e8` (`git show 71191e8 --stat -- supabase`, ou `git checkout 71191e8 -- supabase`).
 
-Codes d'erreur que l'application sait expliquer (voir `services/api.ts`) : `sold_out`, `not_authenticated`,
-`not_authorized`, `event_not_on_sale`, `event_over`, `ticket_already_used`, `cancellation_deadline_passed`,
-`order_not_cancellable`, `too_many_pending`, entre autres — un pour chaque exception levée côté SQL.
+## Pas encore disponible
+
+- Le paiement en ligne : une réservation bloque les places jusqu'à son échéance, puis elles sont rendues à la vente.
+- L'envoi de l'affiche d'un événement : l'application affiche « pas encore disponible » au lieu de faire semblant.
+
+## Historique
+
+Une première implémentation du serveur (Django, dossier `backend/`) existe dans l'historique git, au commit `ea6b31e`
+(`git show ea6b31e --stat`, ou `git checkout ea6b31e -- backend`). Elle n'est plus dans le projet.
