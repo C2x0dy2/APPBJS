@@ -1,56 +1,49 @@
-# Welcome to your Expo app 👋
+# Fosse : billetterie (application React / Expo + Supabase)
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Application de billetterie pour un collectif de Bordeaux (et deux collectifs partenaires), pour iOS, Android et le
+web. Un seul code, en TypeScript, avec [Expo](https://expo.dev) (SDK 57) et Expo Router. Deux espaces :
 
-## Get started
+- **Acheteur** (compte obligatoire) : accueil et recherche, détail d'un événement, réservation (plusieurs types de
+  billets à la fois), mes billets (QR code), mes réservations en attente, annulation jusqu'à la date limite.
+- **Organisateur** (cloisonné par collectif) : ses événements, création et modification, annulation (avec
+  remboursement automatique des commandes payées par carte), tableau de bord des ventes en temps réel, scan des
+  billets à l'entrée, export CSV des participants.
 
-1. Install dependencies
+Ce dépôt contient **l'application ET le backend** : `src/` (Expo/React Native) et `supabase/` (schéma, moteur de
+réservation, fonctions Edge) vivent au même endroit — voir aussi `supabase/README.md` pour la mise en place du
+projet Supabase.
 
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Lancer l'application
 
 ```bash
-npm run reset-project
+npm install
+cp .env.example .env     # renseigner EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY
+npx expo start            # « w » pour le web ; ou Expo Go / un émulateur
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Avant de livrer : `npx tsc --noEmit` et `npx expo lint`.
 
-### Other setup steps
+## Où est quoi
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+| Dossier | Rôle |
+| --- | --- |
+| `src/app/` | Les écrans (une route par fichier, Expo Router) : `(buyer)/`, `organizer/`, connexion, inscription, liens reçus par e-mail, pages légales |
+| `src/services/` | **Le seul endroit qui parle à Supabase** (`lib/supabase.ts` : le client ; `services/api.ts` : erreurs communes). Les écrans passent toujours par là, jamais par un accès direct à `supabase.from()` depuis un composant |
+| `src/types/` | La forme exacte de chaque objet renvoyé par les services |
+| `src/context/` | Qui est connecté (`auth`), réglages du site (`site`) |
+| `src/hooks/use-load.ts` | Lecture de données avec chargement, erreur et « Réessayer » |
+| `src/components/` | Composants (`ui/` : le kit : boutons, champs, cartes…) |
+| `supabase/migrations/` | Le schéma et toute la logique métier critique (anti-survente, idempotence des paiements, liste d'attente, scan, annulation d'événement) en fonctions SQL atomiques |
+| `supabase/functions/` | Fonctions Edge (Deno) : paiement Stripe, email de confirmation, connexion par nom d'utilisateur, annulation d'événement avec remboursement |
 
-## Learn more
+La session est gérée par Supabase Auth (jeton gardé par le client Supabase lui-même, via `expo-secure-store` sur
+téléphone et `localStorage` sur le web).
 
-To learn more about developing your project with Expo, look at the following resources:
+## Le backend attendu
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+L'app ne parle qu'à Supabase : pas de serveur REST intermédiaire. `supabase/README.md` documente la mise en place
+complète (migrations à exécuter dans l'ordre, secrets Stripe/Resend, planification `pg_cron`).
 
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Codes d'erreur que l'application sait expliquer (voir `services/api.ts`) : `sold_out`, `not_authenticated`,
+`not_authorized`, `event_not_on_sale`, `event_over`, `ticket_already_used`, `cancellation_deadline_passed`,
+`order_not_cancellable`, `too_many_pending`, entre autres — un pour chaque exception levée côté SQL.

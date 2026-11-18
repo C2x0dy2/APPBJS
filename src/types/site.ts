@@ -1,4 +1,4 @@
-// Ce que l'application sait du site, et que l'administrateur règle côté serveur (GET /api/v1/site/ et /api/v1/pages/<slug>/).
+// Ce que l'application sait du site, et que l'administrateur règle côté serveur (voir services/siteservices.ts).
 
 // Un lien vers une page de texte (CGV, politique de confidentialité…).
 export interface PageLink {

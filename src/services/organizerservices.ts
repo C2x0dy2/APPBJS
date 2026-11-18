@@ -206,7 +206,7 @@ export async function updateEvent(id: string, input: EventInput): Promise<Event>
   if (error) throw mapSupabaseError(error);
 
   // Types de place : on garde ceux qui ont un id (modifiés), on crée les autres, et on ne supprime jamais ici
-  // (une place déjà vendue ne doit jamais disparaître) — même esprit que gestion.py côté Django.
+  // (une place déjà vendue ne doit jamais disparaître).
   for (const t of input.ticketTypes) {
     const payload = {
       event_id: id,
