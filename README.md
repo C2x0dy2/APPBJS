@@ -42,8 +42,10 @@ rejouer d'anciens résultats).
 - **Edge Functions** : `login-with-username` (connexion par nom d'utilisateur), `cancel-event` (annulation d'un événement),
   `create-checkout-session` (ouvre le paiement Stripe d'une réservation par carte, bouton « Payer »).
 
-Les migrations SQL et les Edge Functions **ne sont pas dans ce dépôt pour le moment**. Leur dernière version versionnée est au
-commit `71191e8` (`git show 71191e8 --stat -- supabase`, ou `git checkout 71191e8 -- supabase`).
+Les migrations SQL et les Edge Functions sont **volontairement gardées hors de ce dépôt** (décision d'équipe du 18/11) :
+elles vivent dans le dépôt séparé `APPBJS-Bintou`, pas ici. Ne pas les réimporter dans `front-divine` — ça a déjà été fait
+et défait une fois. Leur dernière version versionnée dans *cet* historique reste consultable au commit `71191e8`
+(`git show 71191e8 --stat -- supabase`) si besoin de retrouver une ancienne trace, sans la restaurer.
 
 ## Pas encore disponible
 
