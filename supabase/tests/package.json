@@ -1,0 +1,12 @@
+{
+  "name": "billeterie-tests-sql",
+  "private": true,
+  "type": "module",
+  "description": "Tests de sécurité des migrations Supabase sur un Postgres local (PGlite), sans Docker ni projet en ligne.",
+  "scripts": {
+    "test": "node securite.test.mjs ../.."
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.16"
+  }
+}
