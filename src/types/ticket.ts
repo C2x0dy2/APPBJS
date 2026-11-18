@@ -1,5 +1,5 @@
 // Un type de place (Fosse, Balcon, VIP…), tel que le renvoie le serveur. Les prix sont en unités de la monnaie de
-// l'événement (20 = 20 €). Un test compare ce fichier à la réponse réelle du serveur.
+// l'événement (20 = 20 €).
 export interface TicketType {
     id: string;
     eventId: string;

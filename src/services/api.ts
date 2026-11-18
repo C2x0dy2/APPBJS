@@ -1,7 +1,7 @@
 import { API_URL } from "../constants/config";
 import { clearToken, getToken } from "./session-storage";
 
-// Le client de l'API Django (/api/v1/). Tous les services passent par apiRequest : c'est ici, et seulement ici, qu'on
+// Le client de l'API de l'application (/api/v1/). Tous les services passent par apiRequest : c'est ici, et seulement ici, qu'on
 // envoie le jeton de connexion, qu'on lit les erreurs du serveur et qu'on gère les pannes réseau.
 
 const TIMEOUT_MS = 15_000;

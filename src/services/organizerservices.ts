@@ -8,7 +8,7 @@ import { apiRequest, orNotFound } from "./api";
 // L'espace ORGANISATEUR : les événements de son collectif, leurs chiffres de vente, et leur gestion.
 // Le serveur cloisonne tout par collectif : un événement d'un autre collectif répond « introuvable », comme s'il n'existait pas.
 
-// --- Ce que le formulaire envoie (backend/ticketing/gestion.py) ---
+// --- Ce que le formulaire envoie (corps de POST /organizer/events/ et de PUT /organizer/events/<id>/) ---
 
 export interface TicketTypeInput {
   id?: string; // présent seulement pour une place qui existait déjà (modification)
